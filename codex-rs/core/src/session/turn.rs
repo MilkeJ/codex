@@ -149,6 +149,10 @@ pub(crate) async fn run_turn(
     prewarmed_client_session: Option<ModelClientSession>,
     cancellation_token: CancellationToken,
 ) -> CodexResult<Option<String>> {
+    // Existing history belongs to completed turns. Prune response machinery before checking the
+    // active token budget so stale server usage cannot trigger unnecessary pre-turn compaction.
+    sess.prune_completed_turn_history(turn_context.as_ref())
+        .await;
     let mut client_session =
         prewarmed_client_session.unwrap_or_else(|| sess.services.model_client.new_session());
     // TODO(ccunningham): Pre-turn compaction runs before context updates and the
@@ -314,6 +318,13 @@ pub(crate) async fn run_turn(
                 let (has_pending_input, token_status, estimated_token_count) = async {
                     let has_pending_input =
                         sess.input_queue.has_pending_input(&sess.active_turn).await;
+                    if has_pending_input && !model_needs_follow_up {
+                        // A terminal response followed by queued input starts a new instruction
+                        // boundary inside this run. If the model requested a follow-up, the tool
+                        // call/output chain is still live and must remain available instead.
+                        sess.prune_completed_turn_history(turn_context.as_ref())
+                            .await;
+                    }
                     let token_status = super::context_window::context_window_token_status(
                         sess.as_ref(),
                         turn_context.as_ref(),
