@@ -1,3 +1,4 @@
+mod completed_turn;
 mod history;
 mod normalize;
 pub(crate) mod updates;

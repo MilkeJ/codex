@@ -1185,6 +1185,23 @@ impl Session {
         state.get_total_token_usage(state.server_reasoning_included())
     }
 
+    /// Prunes completed response machinery when the request uses the default `current_turn`
+    /// reasoning context. Responses Lite explicitly uses `all_turns`, so its history must remain
+    /// intact.
+    pub(crate) async fn prune_completed_turn_history(&self, turn_context: &TurnContext) {
+        if turn_context.model_info.use_responses_lite {
+            return;
+        }
+
+        let pruned = {
+            let mut state = self.state.lock().await;
+            state.prune_completed_turn_history()
+        };
+        if pruned {
+            self.recompute_token_usage(turn_context).await;
+        }
+    }
+
     pub(crate) async fn auto_compact_window_snapshot(&self) -> AutoCompactWindowSnapshot {
         let state = self.state.lock().await;
         state.auto_compact_window_snapshot()
