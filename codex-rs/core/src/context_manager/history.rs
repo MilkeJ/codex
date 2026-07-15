@@ -1,6 +1,7 @@
 use crate::context::ContextualUserFragment;
 use crate::context::world_state::WorldState;
 use crate::context::world_state::WorldStateSnapshot;
+use crate::context_manager::completed_turn::is_durable_completed_turn_item;
 use crate::context_manager::normalize;
 use crate::event_mapping::has_non_contextual_dev_message_content;
 use crate::event_mapping::is_contextual_dev_message_content;
@@ -155,6 +156,20 @@ impl ContextManager {
 
     pub(crate) fn history_version(&self) -> u64 {
         self.history_version
+    }
+
+    /// Removes completed-turn response machinery that the default Responses reasoning context no
+    /// longer uses. Persisted rollout history is unaffected because this only changes the live
+    /// model context.
+    pub(crate) fn prune_completed_turn_items(&mut self) -> bool {
+        let previous_len = self.items.len();
+        self.items.retain(is_durable_completed_turn_item);
+        if self.items.len() == previous_len {
+            return false;
+        }
+
+        self.history_version = self.history_version.saturating_add(1);
+        true
     }
 
     // Estimate token usage using byte-based heuristics from the truncation helpers.
