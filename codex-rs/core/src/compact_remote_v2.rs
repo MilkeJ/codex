@@ -6,6 +6,7 @@ use crate::client::ModelClientSession;
 use crate::client_common::ResponseEvent;
 use crate::compact::CompactionAnalyticsAttempt;
 use crate::compact::CompactionAnalyticsDetails;
+use crate::compact::CompactionTaskOptions;
 use crate::compact::InitialContextInjection;
 use crate::compact::compaction_status_from_result;
 use crate::compact_model_fallback::record_model_fallback;
@@ -24,9 +25,6 @@ use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
 use codex_analytics::CompactionImplementation;
-use codex_analytics::CompactionPhase;
-use codex_analytics::CompactionReason;
-use codex_analytics::CompactionTrigger;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::items::ContextCompactionItem;
@@ -61,23 +59,14 @@ pub(crate) async fn run_inline_remote_auto_compact_task(
     step_context: Arc<StepContext>,
     fallback_step_context: Option<Arc<StepContext>>,
     client_session: &mut ModelClientSession,
-    initial_context_injection: InitialContextInjection,
-    reason: CompactionReason,
-    phase: CompactionPhase,
+    options: CompactionTaskOptions,
 ) -> CodexResult<()> {
-    let compaction_metadata = CompactionTurnMetadata::new(
-        CompactionTrigger::Auto,
-        reason,
-        CompactionImplementation::ResponsesCompactionV2,
-        phase,
-    );
     run_remote_compact_task_inner(
         &sess,
         &step_context,
         fallback_step_context.as_ref(),
         Some(client_session),
-        initial_context_injection,
-        compaction_metadata,
+        options,
     )
     .await
 }
@@ -97,19 +86,12 @@ pub(crate) async fn run_remote_compact_task(
     });
     sess.send_event(&turn_context, start_event).await;
 
-    let compaction_metadata = CompactionTurnMetadata::new(
-        CompactionTrigger::Manual,
-        CompactionReason::UserRequested,
-        CompactionImplementation::ResponsesCompactionV2,
-        CompactionPhase::StandaloneTurn,
-    );
     run_remote_compact_task_inner(
         &sess,
         &step_context,
         /*fallback_step_context*/ None,
         /*client_session*/ None,
-        InitialContextInjection::DoNotInject,
-        compaction_metadata,
+        CompactionTaskOptions::manual(),
     )
     .await
 }
@@ -119,10 +101,10 @@ async fn run_remote_compact_task_inner(
     step_context: &Arc<StepContext>,
     fallback_step_context: Option<&Arc<StepContext>>,
     client_session: Option<&mut ModelClientSession>,
-    initial_context_injection: InitialContextInjection,
-    compaction_metadata: CompactionTurnMetadata,
+    options: CompactionTaskOptions,
 ) -> CodexResult<()> {
     let turn_context = &step_context.turn;
+    let compaction_metadata = options.metadata(CompactionImplementation::ResponsesCompactionV2);
     let trigger = compaction_metadata.trigger();
     let reason = compaction_metadata.reason();
     let implementation = compaction_metadata.implementation();
@@ -161,9 +143,9 @@ async fn run_remote_compact_task_inner(
         step_context,
         fallback_step_context,
         client_session,
-        initial_context_injection,
         compaction_metadata,
         &mut analytics_details,
+        options,
     )
     .await;
     let status = compaction_status_from_result(&result);
@@ -199,11 +181,15 @@ async fn run_remote_compact_task_inner_impl(
     step_context: &Arc<StepContext>,
     fallback_step_context: Option<&Arc<StepContext>>,
     mut client_session: Option<&mut ModelClientSession>,
-    initial_context_injection: InitialContextInjection,
     compaction_metadata: CompactionTurnMetadata,
     analytics_details: &mut CompactionAnalyticsDetails,
+    options: CompactionTaskOptions,
 ) -> CodexResult<()> {
     let turn_context = &step_context.turn;
+    let CompactionTaskOptions {
+        initial_context_injection,
+        ..
+    } = options;
     let context_compaction_item = ContextCompactionItem::new();
     let compaction_id = context_compaction_item.id.clone();
     let compaction_trace = sess.services.rollout_thread_trace.compaction_trace_context(
