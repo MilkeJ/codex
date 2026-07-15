@@ -132,6 +132,7 @@ mod stream_no_completed;
 mod subagent_notifications;
 mod token_budget;
 mod tool_harness;
+mod tool_output_reclamation;
 mod tool_parallelism;
 mod tools;
 mod truncation;

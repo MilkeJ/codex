@@ -18,6 +18,7 @@ use crate::compact_remote::run_inline_remote_auto_compact_task;
 use crate::compact_remote_v2::run_inline_remote_auto_compact_task as run_inline_remote_auto_compact_task_v2;
 use crate::connectors;
 use crate::context::ContextualUserFragment;
+use crate::context_manager::ToolOutputReclamation;
 use crate::feedback_tags;
 use crate::hook_runtime::inspect_pending_input;
 use crate::hook_runtime::record_additional_contexts;
@@ -44,6 +45,9 @@ use crate::session::PreviousTurnSettings;
 use crate::session::TurnInput;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
+use crate::session::tool_output_reclamation::ReclamationDecision;
+use crate::session::tool_output_reclamation::ReclamationEvaluation;
+use crate::session::tool_output_reclamation::ToolOutputReclamationState;
 use crate::session::turn_context::TurnContext;
 use crate::stream_events_utils::HandleOutputCtx;
 use crate::stream_events_utils::TurnItemContributorPolicy;
@@ -220,6 +224,7 @@ pub(crate) async fn run_turn(
     let turn_diff_tracker = Arc::new(tokio::sync::Mutex::new(
         TurnDiffTracker::with_environment_display_roots(display_roots),
     ));
+    let mut tool_output_reclamation_state = ToolOutputReclamationState::default();
 
     // `ModelClientSession` is turn-scoped and caches WebSocket + sticky routing state, so we reuse
     // one instance across retries within this turn.
@@ -256,6 +261,7 @@ pub(crate) async fn run_turn(
             Some(step_context) => step_context,
             None => sess.capture_step_context(Arc::clone(&turn_context)).await,
         };
+        let active_tool_output_reclamation = tool_output_reclamation_state.active_plan().cloned();
         let sampling_request_result: CodexResult<_> = async {
             super::time_reminder::maybe_record_current_time_reminder(
                 sess.as_ref(),
@@ -269,13 +275,26 @@ pub(crate) async fn run_turn(
                 .await;
 
             // Construct the input that we will send to the model.
-            let sampling_request_input: Vec<ResponseItem> = async {
-                sess.clone_history()
-                    .await
-                    .for_prompt(&turn_context.model_info.input_modalities)
-            }
-            .instrument(trace_span!("run_turn.prepare_sampling_request_input"))
-            .await;
+            let (sampling_request_input, sampling_request_history_len): (Vec<ResponseItem>, usize) =
+                async {
+                    let mut history = sess.clone_history().await;
+                    let history_len = history.raw_items().len();
+                    if let Some(reclamation) = active_tool_output_reclamation.as_ref()
+                        && !reclamation.apply(&mut history)
+                    {
+                        error!(
+                            turn_id = %turn_context.sub_id,
+                            "tool output reclamation no longer matches live history"
+                        );
+                        return Err(CodexErr::InternalServerError);
+                    }
+                    Ok((
+                        history.for_prompt(&turn_context.model_info.input_modalities),
+                        history_len,
+                    ))
+                }
+                .instrument(trace_span!("run_turn.prepare_sampling_request_input"))
+                .await?;
 
             let responses_metadata = turn_context.turn_metadata_state.to_responses_metadata(
                 sess.installation_id.clone(),
@@ -290,13 +309,18 @@ pub(crate) async fn run_turn(
                 &mut client_session,
                 &responses_metadata,
                 sampling_request_input,
+                active_tool_output_reclamation.as_ref(),
                 cancellation_token.child_token(),
             )
             .await
+            .map(|result| (result, sampling_request_history_len))
         }
         .await;
         match sampling_request_result {
-            Ok((sampling_request_output, sampling_request_input)) => {
+            Ok((
+                (sampling_request_output, sampling_request_input),
+                sampling_request_history_len,
+            )) => {
                 let SamplingRequestResult {
                     needs_follow_up: model_needs_follow_up,
                     last_agent_message: sampling_request_last_agent_message,
@@ -351,8 +375,14 @@ pub(crate) async fn run_turn(
                     "post sampling token usage"
                 );
 
-                let should_roll_over = needs_follow_up
-                    && (sess.take_new_context_window_request().await || token_limit_reached);
+                // Reading the explicit rollover request consumes it, so capture it exactly once.
+                let explicit_new_context = if needs_follow_up {
+                    sess.take_new_context_window_request().await
+                } else {
+                    false
+                };
+                let should_roll_over =
+                    needs_follow_up && (explicit_new_context || token_limit_reached);
                 let allow_auto_compact_fallback = !should_roll_over && !token_limit_reached;
                 super::token_budget::maybe_record(
                     sess.as_ref(),
@@ -364,13 +394,45 @@ pub(crate) async fn run_turn(
 
                 // as long as compaction works well in getting us way below the token limit, we shouldn't worry about being in an infinite loop.
                 if should_roll_over {
+                    if !explicit_new_context
+                        && token_limit_reached
+                        && active_tool_output_reclamation.is_none()
+                        && !turn_context.config.features.enabled(Feature::TokenBudget)
+                    {
+                        let history = sess.clone_history().await;
+                        let base_instructions = sess.get_base_instructions().await;
+                        match tool_output_reclamation_state.evaluate_before_compaction(
+                            ReclamationEvaluation {
+                                history: &history,
+                                consumed_item_count: sampling_request_history_len,
+                                base_instructions: &base_instructions,
+                                token_status: &token_status,
+                                auto_compact_limit_scope: turn_context
+                                    .config
+                                    .model_auto_compact_token_limit_scope,
+                                turn_id: &turn_context.sub_id,
+                            },
+                        ) {
+                            ReclamationDecision::RetrySampling => {
+                                // The next prompt is no longer a strict prefix extension, so the
+                                // WebSocket transport sends a fresh root request while preserving
+                                // the turn-scoped sticky routing state.
+                                sess.clear_auto_compact_window_prefill().await;
+                                continue;
+                            }
+                            ReclamationDecision::ProceedToCompaction { .. } => {}
+                        }
+                    }
+
                     if let Err(err) = run_auto_compact(
                         &sess,
                         Arc::clone(&step_context),
                         /*fallback_step_context*/ None,
                         &mut client_session,
                         CompactionTaskOptions::auto(
-                            InitialContextInjection::BeforeLastUserMessage(Arc::clone(&world_state)),
+                            InitialContextInjection::BeforeLastUserMessage(Arc::clone(
+                                &world_state,
+                            )),
                             CompactionReason::ContextLimit,
                             CompactionPhase::MidTurn,
                         ),
@@ -385,6 +447,7 @@ pub(crate) async fn run_turn(
                             .await;
                         return Ok(None);
                     }
+                    tool_output_reclamation_state.reset();
                     if run_pending_session_start_hooks(&sess, &turn_context).await {
                         return Ok(None);
                     }
@@ -1128,6 +1191,7 @@ async fn run_sampling_request(
     client_session: &mut ModelClientSession,
     responses_metadata: &CodexResponsesMetadata,
     input: Vec<ResponseItem>,
+    tool_output_reclamation: Option<&ToolOutputReclamation>,
     cancellation_token: CancellationToken,
 ) -> CodexResult<(SamplingRequestResult, Vec<ResponseItem>)> {
     let turn_context = Arc::clone(&step_context.turn);
@@ -1155,9 +1219,17 @@ async fn run_sampling_request(
         let prompt_input = if let Some(input) = initial_input.take() {
             input
         } else {
-            sess.clone_history()
-                .await
-                .for_prompt(&turn_context.model_info.input_modalities)
+            let mut history = sess.clone_history().await;
+            if let Some(reclamation) = tool_output_reclamation
+                && !reclamation.apply(&mut history)
+            {
+                error!(
+                    turn_id = %turn_context.sub_id,
+                    "tool output reclamation no longer matches history during sampling retry"
+                );
+                return Err(CodexErr::InternalServerError);
+            }
+            history.for_prompt(&turn_context.model_info.input_modalities)
         };
         let prompt = build_prompt(
             prompt_input,
