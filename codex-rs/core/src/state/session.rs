@@ -111,6 +111,16 @@ impl SessionState {
         self.history.clone()
     }
 
+    pub(crate) fn prune_completed_turn_history(&mut self) -> bool {
+        let pruned = self.history.prune_completed_turn_items();
+        if pruned {
+            // Pruning rewrites the effective prefix, so a server-observed baseline from the
+            // previous prompt can no longer be used for body-after-prefix accounting.
+            self.auto_compact_window.clear_prefill();
+        }
+        pruned
+    }
+
     pub(crate) fn replace_history(
         &mut self,
         items: Vec<ResponseItem>,
