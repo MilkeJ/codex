@@ -49,7 +49,7 @@ pub(crate) async fn run_inline_remote_auto_compact_task(
     step_context: Arc<StepContext>,
     fallback_step_context: Option<Arc<StepContext>>,
     turn_state: Arc<OnceLock<String>>,
-    options: CompactionTaskOptions,
+    options: CompactionTaskOptions<'_>,
 ) -> CodexResult<()> {
     run_remote_compact_task_inner(
         &sess,
@@ -93,7 +93,7 @@ async fn run_remote_compact_task_inner(
     step_context: &Arc<StepContext>,
     fallback_step_context: Option<&Arc<StepContext>>,
     turn_state: Option<Arc<OnceLock<String>>>,
-    options: CompactionTaskOptions,
+    options: CompactionTaskOptions<'_>,
 ) -> CodexResult<()> {
     let turn_context = &step_context.turn;
     let compaction_metadata = options.metadata(CompactionImplementation::ResponsesCompact);
@@ -172,11 +172,12 @@ async fn run_remote_compact_task_inner_impl(
     turn_state: Option<Arc<OnceLock<String>>>,
     compaction_metadata: CompactionTurnMetadata,
     analytics_details: &mut CompactionAnalyticsDetails,
-    options: CompactionTaskOptions,
+    options: CompactionTaskOptions<'_>,
 ) -> CodexResult<()> {
     let turn_context = &step_context.turn;
     let CompactionTaskOptions {
         initial_context_injection,
+        tool_output_reclamation,
         ..
     } = options;
     let context_compaction_item = ContextCompactionItem::new();
@@ -199,6 +200,7 @@ async fn run_remote_compact_task_inner_impl(
         &compaction_trace,
         compaction_metadata,
         analytics_details,
+        tool_output_reclamation,
     )
     .await;
     let (attempt, compaction_turn_context) = match attempt {
@@ -225,6 +227,7 @@ async fn run_remote_compact_task_inner_impl(
                 &fallback_compaction_trace,
                 compaction_metadata,
                 analytics_details,
+                tool_output_reclamation,
             )
             .await;
             record_model_fallback(
@@ -381,24 +384,32 @@ pub(crate) fn trim_function_call_history_to_fit_context_window(
     let initial_estimated_tokens = i64::try_from(estimated_tokens).unwrap_or(i64::MAX);
     let mut rewritten_items = Vec::new();
 
-    for (item, item_tokens) in original_items.iter().zip(item_token_estimates).rev() {
+    // Reclaimed histories retain reasoning between older tool outputs. Scan past those
+    // non-output items, but keep upstream's single-copy replacement strategy.
+    for (index, (item, item_tokens)) in original_items
+        .iter()
+        .zip(item_token_estimates)
+        .enumerate()
+        .rev()
+    {
         if i64::try_from(estimated_tokens).unwrap_or(i64::MAX) <= context_window {
             break;
         }
         let Some(rewritten_item) = rewritten_output_for_context_window(item) else {
-            break;
+            continue;
         };
         estimated_tokens = estimated_tokens
             .saturating_sub(i128::from(item_tokens))
             .saturating_add(i128::from(estimate_item_token_count(&rewritten_item)));
-        rewritten_items.push(rewritten_item);
+        rewritten_items.push((index, rewritten_item));
     }
 
     let rewritten_outputs = rewritten_items.len();
     if rewritten_outputs > 0 {
-        let retained_len = original_items.len() - rewritten_outputs;
-        let mut items = original_items[..retained_len].to_vec();
-        items.extend(rewritten_items.into_iter().rev());
+        let mut items = original_items.to_vec();
+        for (index, rewritten_item) in rewritten_items {
+            items[index] = rewritten_item;
+        }
         history.replace(items);
     }
 

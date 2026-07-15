@@ -409,6 +409,8 @@ pub(crate) async fn run_turn(
 
                 // as long as compaction works well in getting us way below the token limit, we shouldn't worry about being in an infinite loop.
                 if should_roll_over {
+                    let mut compaction_reclamation =
+                        tool_output_reclamation_state.active_plan().cloned();
                     if !explicit_new_context
                         && token_limit_reached
                         && !turn_context.config.features.enabled(Feature::TokenBudget)
@@ -434,16 +436,27 @@ pub(crate) async fn run_turn(
                                 sess.clear_auto_compact_window_prefill().await;
                                 continue;
                             }
-                            ReclamationDecision::ProceedToCompaction { .. } => {}
+                            ReclamationDecision::ProceedToCompaction { reclamation } => {
+                                compaction_reclamation = reclamation;
+                            }
                         }
                     }
 
+                    if compaction_reclamation.is_some() {
+                        info!(
+                            turn_id = %turn_context.sub_id,
+                            explicit_new_context,
+                            token_limit_reached,
+                            "reclaimed context requires compaction; compacting reclaimed history"
+                        );
+                    }
                     if let MidTurnCompactOutcome::ErrorReported =
                         run_mid_turn_context_limit_compact(
                             &sess,
                             &step_context,
                             &mut client_session,
                             &world_state,
+                            compaction_reclamation.as_ref(),
                         )
                         .await?
                     {
@@ -907,6 +920,7 @@ async fn run_pre_sampling_compact(
                 InitialContextInjection::DoNotInject,
                 CompactionReason::ContextLimit,
                 CompactionPhase::PreTurn,
+                /*tool_output_reclamation*/ None,
             ),
         )
         .await?;
@@ -986,6 +1000,7 @@ async fn maybe_run_previous_model_inline_compact(
                 InitialContextInjection::DoNotInject,
                 CompactionReason::CompHashChanged,
                 CompactionPhase::PreTurn,
+                /*tool_output_reclamation*/ None,
             ),
         )
         .await?;
@@ -1035,6 +1050,7 @@ async fn maybe_run_previous_model_inline_compact(
                 InitialContextInjection::DoNotInject,
                 CompactionReason::ModelDownshift,
                 CompactionPhase::PreTurn,
+                /*tool_output_reclamation*/ None,
             ),
         )
         .await?;
@@ -1052,7 +1068,7 @@ async fn run_auto_compact(
     step_context: Arc<StepContext>,
     fallback_step_context: Option<Arc<StepContext>>,
     client_session: &mut ModelClientSession,
-    options: CompactionTaskOptions,
+    options: CompactionTaskOptions<'_>,
 ) -> CodexResult<()> {
     let turn_context = &step_context.turn;
     if turn_context.config.features.enabled(Feature::TokenBudget) {
@@ -1117,6 +1133,7 @@ async fn run_mid_turn_context_limit_compact(
     step_context: &Arc<StepContext>,
     client_session: &mut ModelClientSession,
     world_state: &Arc<WorldState>,
+    tool_output_reclamation: Option<&ToolOutputReclamation>,
 ) -> CodexResult<MidTurnCompactOutcome> {
     match run_auto_compact(
         sess,
@@ -1127,6 +1144,7 @@ async fn run_mid_turn_context_limit_compact(
             InitialContextInjection::BeforeLastUserMessage(Arc::clone(world_state)),
             CompactionReason::ContextLimit,
             CompactionPhase::MidTurn,
+            tool_output_reclamation,
         ),
     )
     .await

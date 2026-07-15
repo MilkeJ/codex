@@ -5,6 +5,7 @@ use crate::Prompt;
 use crate::client::ModelClientSession;
 use crate::client_common::ResponseEvent;
 use crate::context::world_state::WorldState;
+use crate::context_manager::ToolOutputReclamation;
 use crate::hook_runtime::PostCompactHookOutcome;
 use crate::hook_runtime::PreCompactHookOutcome;
 use crate::hook_runtime::run_post_compact_hooks;
@@ -68,33 +69,37 @@ pub(crate) enum InitialContextInjection {
     DoNotInject,
 }
 
-pub(crate) struct CompactionTaskOptions {
+pub(crate) struct CompactionTaskOptions<'a> {
     pub(crate) initial_context_injection: InitialContextInjection,
     pub(crate) trigger: CompactionTrigger,
     pub(crate) reason: CompactionReason,
     pub(crate) phase: CompactionPhase,
+    pub(crate) tool_output_reclamation: Option<&'a ToolOutputReclamation>,
 }
 
-impl CompactionTaskOptions {
+impl<'a> CompactionTaskOptions<'a> {
     pub(crate) fn auto(
         initial_context_injection: InitialContextInjection,
         reason: CompactionReason,
         phase: CompactionPhase,
+        tool_output_reclamation: Option<&'a ToolOutputReclamation>,
     ) -> Self {
         Self {
             initial_context_injection,
             trigger: CompactionTrigger::Auto,
             reason,
             phase,
+            tool_output_reclamation,
         }
     }
 
-    pub(crate) fn manual() -> CompactionTaskOptions {
+    pub(crate) fn manual() -> CompactionTaskOptions<'static> {
         CompactionTaskOptions {
             initial_context_injection: InitialContextInjection::DoNotInject,
             trigger: CompactionTrigger::Manual,
             reason: CompactionReason::UserRequested,
             phase: CompactionPhase::StandaloneTurn,
+            tool_output_reclamation: None,
         }
     }
 
@@ -130,7 +135,7 @@ pub(crate) fn should_use_remote_compact_task(provider: &ModelProviderInfo) -> bo
 pub(crate) async fn run_inline_auto_compact_task(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
-    options: CompactionTaskOptions,
+    options: CompactionTaskOptions<'_>,
 ) -> CodexResult<()> {
     let prompt = turn_context
         .config
@@ -175,13 +180,14 @@ async fn run_compact_task_inner(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
     input: Vec<UserInput>,
-    options: CompactionTaskOptions,
+    options: CompactionTaskOptions<'_>,
 ) -> CodexResult<()> {
     let CompactionTaskOptions {
         initial_context_injection,
         trigger,
         reason,
         phase,
+        tool_output_reclamation,
     } = options;
     let compaction_metadata =
         CompactionTurnMetadata::new(trigger, reason, CompactionImplementation::Responses, phase);
@@ -216,6 +222,7 @@ async fn run_compact_task_inner(
         input,
         initial_context_injection,
         compaction_metadata,
+        tool_output_reclamation,
     )
     .await;
     let status = compaction_status_from_result(&result);
@@ -251,6 +258,7 @@ async fn run_compact_task_inner_impl(
     input: Vec<UserInput>,
     initial_context_injection: InitialContextInjection,
     compaction_metadata: CompactionTurnMetadata,
+    tool_output_reclamation: Option<&ToolOutputReclamation>,
 ) -> CodexResult<String> {
     let compaction_item = TurnItem::ContextCompaction(ContextCompactionItem::new());
     sess.emit_turn_item_started(&turn_context, &compaction_item)
@@ -258,6 +266,11 @@ async fn run_compact_task_inner_impl(
     let initial_input_for_turn: ResponseInputItem = ResponseInputItem::from(input);
 
     let mut history = sess.clone_history().await;
+    if let Some(reclamation) = tool_output_reclamation
+        && !reclamation.apply(&mut history)
+    {
+        return Err(CodexErr::InternalServerError);
+    }
     history.record_items(
         &[initial_input_for_turn.into()],
         turn_context.model_info.truncation_policy.into(),

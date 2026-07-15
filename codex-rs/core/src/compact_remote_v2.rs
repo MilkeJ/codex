@@ -59,7 +59,7 @@ pub(crate) async fn run_inline_remote_auto_compact_task(
     step_context: Arc<StepContext>,
     fallback_step_context: Option<Arc<StepContext>>,
     client_session: &mut ModelClientSession,
-    options: CompactionTaskOptions,
+    options: CompactionTaskOptions<'_>,
 ) -> CodexResult<()> {
     run_remote_compact_task_inner(
         &sess,
@@ -101,7 +101,7 @@ async fn run_remote_compact_task_inner(
     step_context: &Arc<StepContext>,
     fallback_step_context: Option<&Arc<StepContext>>,
     client_session: Option<&mut ModelClientSession>,
-    options: CompactionTaskOptions,
+    options: CompactionTaskOptions<'_>,
 ) -> CodexResult<()> {
     let turn_context = &step_context.turn;
     let compaction_metadata = options.metadata(CompactionImplementation::ResponsesCompactionV2);
@@ -183,11 +183,12 @@ async fn run_remote_compact_task_inner_impl(
     mut client_session: Option<&mut ModelClientSession>,
     compaction_metadata: CompactionTurnMetadata,
     analytics_details: &mut CompactionAnalyticsDetails,
-    options: CompactionTaskOptions,
+    options: CompactionTaskOptions<'_>,
 ) -> CodexResult<()> {
     let turn_context = &step_context.turn;
     let CompactionTaskOptions {
         initial_context_injection,
+        tool_output_reclamation,
         ..
     } = options;
     let context_compaction_item = ContextCompactionItem::new();
@@ -209,6 +210,7 @@ async fn run_remote_compact_task_inner_impl(
         &compaction_trace,
         compaction_metadata,
         analytics_details,
+        tool_output_reclamation,
     )
     .await;
     let (attempt, compaction_turn_context) = match attempt {
@@ -235,6 +237,7 @@ async fn run_remote_compact_task_inner_impl(
                 &fallback_compaction_trace,
                 compaction_metadata,
                 analytics_details,
+                tool_output_reclamation,
             )
             .await;
             record_model_fallback(
