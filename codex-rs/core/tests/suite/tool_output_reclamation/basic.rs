@@ -3,6 +3,10 @@ use anyhow::Result;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_response_created;
+use core_test_support::responses::mount_compact_json_once;
+use core_test_support::responses::mount_sse_sequence;
+use core_test_support::responses::sse;
+use core_test_support::responses::start_mock_server;
 use core_test_support::responses::start_websocket_server;
 use core_test_support::skip_if_no_network;
 use pretty_assertions::assert_eq;
@@ -124,5 +128,137 @@ async fn reclaims_consumed_outputs_and_avoids_compaction_when_turn_finishes() ->
     );
     assert!(rollout.contains(current_call_id));
     server.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reclaimed_outputs_remain_active_across_tool_follow_ups() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let consumed_call_ids = ["active-1", "active-2", "active-3", "active-4"];
+    let response_mock = mount_sse_sequence(
+        &server,
+        vec![
+            tool_call_response(
+                "active-tools",
+                &consumed_call_ids,
+                /*total_tokens*/ 10_000,
+            ),
+            tool_call_response("active-trigger", &["active-current"], AUTO_COMPACT_LIMIT),
+            tool_call_response(
+                "active-follow-up-1",
+                &["active-follow-up-output-1"],
+                /*total_tokens*/ 50_000,
+            ),
+            tool_call_response(
+                "active-follow-up-2",
+                &["active-follow-up-output-2"],
+                /*total_tokens*/ 60_000,
+            ),
+            sse(vec![
+                ev_response_created("active-finished"),
+                ev_assistant_message("active-message", "finished with reclaimed context"),
+                ev_completed("active-finished"),
+            ]),
+        ],
+    )
+    .await;
+    let compact_mock = mount_compact_json_once(&server, compact_response()).await;
+    let mut builder = test_builder(AUTO_COMPACT_LIMIT);
+    let test = builder.build_with_auto_env(&server).await?;
+
+    test.submit_turn("continue across several tools after reclaiming")
+        .await?;
+
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 5);
+    for reclaimed_request in &requests[2..] {
+        for call_id in consumed_call_ids {
+            assert_eq!(
+                reclaimed_request.function_call_output_text(call_id),
+                Some(RECLAIMED_TOOL_OUTPUT_MESSAGE.to_string())
+            );
+        }
+    }
+    assert_original_output(&requests[2], "active-current");
+    assert_original_output(&requests[3], "active-follow-up-output-1");
+    assert_original_output(&requests[4], "active-follow-up-output-2");
+    assert_eq!(compact_mock.requests().len(), 0);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repeated_threshold_extends_reclamation_instead_of_compacting() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let first_consumed_call_ids = [
+        "repeat-first-1",
+        "repeat-first-2",
+        "repeat-first-3",
+        "repeat-first-4",
+    ];
+    let second_consumed_call_ids = [
+        "repeat-second-1",
+        "repeat-second-2",
+        "repeat-second-3",
+        "repeat-second-4",
+    ];
+    let first_current_call_id = "repeat-first-current";
+    let second_current_call_id = "repeat-second-current";
+    let response_mock = mount_sse_sequence(
+        &server,
+        vec![
+            tool_call_response(
+                "repeat-first-tools",
+                &first_consumed_call_ids,
+                /*total_tokens*/ 10_000,
+            ),
+            tool_call_response(
+                "repeat-first-trigger",
+                &[first_current_call_id],
+                AUTO_COMPACT_LIMIT,
+            ),
+            tool_call_response(
+                "repeat-second-tools",
+                &second_consumed_call_ids,
+                /*total_tokens*/ 50_000,
+            ),
+            tool_call_response(
+                "repeat-second-trigger",
+                &[second_current_call_id],
+                AUTO_COMPACT_LIMIT,
+            ),
+            sse(vec![
+                ev_response_created("repeat-finished"),
+                ev_assistant_message("repeat-message", "finished after repeated reclamation"),
+                ev_completed("repeat-finished"),
+            ]),
+        ],
+    )
+    .await;
+    let compact_mock = mount_compact_json_once(&server, compact_response()).await;
+    let mut builder = test_builder(AUTO_COMPACT_LIMIT);
+    let test = builder.build_with_auto_env(&server).await?;
+
+    test.submit_turn("reclaim another batch at the next threshold")
+        .await?;
+
+    assert_eq!(compact_mock.requests().len(), 0);
+    let requests = response_mock.requests();
+    assert_eq!(requests.len(), 5);
+    let twice_reclaimed_request = &requests[4];
+    for call_id in first_consumed_call_ids
+        .iter()
+        .chain(second_consumed_call_ids.iter())
+        .chain(std::iter::once(&first_current_call_id))
+    {
+        assert_eq!(
+            twice_reclaimed_request.function_call_output_text(call_id),
+            Some(RECLAIMED_TOOL_OUTPUT_MESSAGE.to_string())
+        );
+    }
+    assert_original_output(twice_reclaimed_request, second_current_call_id);
     Ok(())
 }
