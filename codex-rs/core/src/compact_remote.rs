@@ -47,7 +47,7 @@ pub(crate) async fn run_inline_remote_auto_compact_task(
     step_context: Arc<StepContext>,
     fallback_step_context: Option<Arc<StepContext>>,
     turn_state: Arc<OnceLock<String>>,
-    options: CompactionTaskOptions,
+    options: CompactionTaskOptions<'_>,
 ) -> CodexResult<()> {
     run_remote_compact_task_inner(
         &sess,
@@ -91,7 +91,7 @@ async fn run_remote_compact_task_inner(
     step_context: &Arc<StepContext>,
     fallback_step_context: Option<&Arc<StepContext>>,
     turn_state: Option<Arc<OnceLock<String>>>,
-    options: CompactionTaskOptions,
+    options: CompactionTaskOptions<'_>,
 ) -> CodexResult<()> {
     let turn_context = &step_context.turn;
     let compaction_metadata = options.metadata(CompactionImplementation::ResponsesCompact);
@@ -170,11 +170,12 @@ async fn run_remote_compact_task_inner_impl(
     turn_state: Option<Arc<OnceLock<String>>>,
     compaction_metadata: CompactionTurnMetadata,
     analytics_details: &mut CompactionAnalyticsDetails,
-    options: CompactionTaskOptions,
+    options: CompactionTaskOptions<'_>,
 ) -> CodexResult<()> {
     let turn_context = &step_context.turn;
     let CompactionTaskOptions {
         initial_context_injection,
+        tool_output_reclamation,
         ..
     } = options;
     let context_compaction_item = ContextCompactionItem::new();
@@ -197,6 +198,7 @@ async fn run_remote_compact_task_inner_impl(
         &compaction_trace,
         compaction_metadata,
         analytics_details,
+        tool_output_reclamation,
     )
     .await;
     let (attempt, compaction_turn_context) = match attempt {
@@ -223,6 +225,7 @@ async fn run_remote_compact_task_inner_impl(
                 &fallback_compaction_trace,
                 compaction_metadata,
                 analytics_details,
+                tool_output_reclamation,
             )
             .await;
             record_model_fallback(
@@ -365,6 +368,13 @@ pub(crate) fn trim_function_call_history_to_fit_context_window(
     let item_count = history.raw_items().len();
 
     for index in (0..item_count).rev() {
+        let Some(rewritten_item) = history
+            .raw_items()
+            .get(index)
+            .and_then(rewritten_output_for_context_window)
+        else {
+            continue;
+        };
         let Some(estimated_tokens_before) =
             history.estimate_token_count_with_base_instructions(base_instructions)
         else {
@@ -373,13 +383,6 @@ pub(crate) fn trim_function_call_history_to_fit_context_window(
         if estimated_tokens_before <= context_window {
             break;
         }
-        let Some(rewritten_item) = history
-            .raw_items()
-            .get(index)
-            .and_then(rewritten_output_for_context_window)
-        else {
-            break;
-        };
         let mut items = history.raw_items().to_vec();
         items[index] = rewritten_item;
         history.replace(items);
