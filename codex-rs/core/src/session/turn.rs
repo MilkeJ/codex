@@ -18,6 +18,7 @@ use crate::compact_remote::run_inline_remote_auto_compact_task;
 use crate::compact_remote_v2::run_inline_remote_auto_compact_task as run_inline_remote_auto_compact_task_v2;
 use crate::connectors;
 use crate::context::ContextualUserFragment;
+use crate::context::world_state::WorldState;
 use crate::context_manager::ToolOutputReclamation;
 use crate::feedback_tags;
 use crate::hook_runtime::inspect_pending_input;
@@ -131,6 +132,11 @@ use tracing::instrument;
 use tracing::trace;
 use tracing::trace_span;
 use tracing::warn;
+
+enum MidTurnCompactOutcome {
+    Completed,
+    ErrorReported,
+}
 
 /// Takes initial turn input and runs a loop where, at each sampling request,
 /// the model replies with either:
@@ -375,6 +381,15 @@ pub(crate) async fn run_turn(
                     "post sampling token usage"
                 );
 
+                let used_reclaimed_tool_outputs = active_tool_output_reclamation.is_some();
+                let completed_reclaimed_turn_boundary =
+                    used_reclaimed_tool_outputs && !model_needs_follow_up && has_pending_input;
+                if completed_reclaimed_turn_boundary {
+                    // The queued input established a completed-turn boundary and the normal
+                    // completed-turn pruning pass already removed the retired machinery.
+                    tool_output_reclamation_state.reset();
+                }
+
                 // Reading the explicit rollover request consumes it, so capture it exactly once.
                 let explicit_new_context = if needs_follow_up {
                     sess.take_new_context_window_request().await
@@ -396,7 +411,6 @@ pub(crate) async fn run_turn(
                 if should_roll_over {
                     if !explicit_new_context
                         && token_limit_reached
-                        && active_tool_output_reclamation.is_none()
                         && !turn_context.config.features.enabled(Feature::TokenBudget)
                     {
                         let history = sess.clone_history().await;
@@ -424,32 +438,27 @@ pub(crate) async fn run_turn(
                         }
                     }
 
-                    if let Err(err) = run_auto_compact(
-                        &sess,
-                        Arc::clone(&step_context),
-                        /*fallback_step_context*/ None,
-                        &mut client_session,
-                        CompactionTaskOptions::auto(
-                            InitialContextInjection::BeforeLastUserMessage(Arc::clone(
-                                &world_state,
-                            )),
-                            CompactionReason::ContextLimit,
-                            CompactionPhase::MidTurn,
-                        ),
-                    )
-                    .await
+                    if let MidTurnCompactOutcome::ErrorReported =
+                        run_mid_turn_context_limit_compact(
+                            &sess,
+                            &step_context,
+                            &mut client_session,
+                            &world_state,
+                        )
+                        .await?
                     {
-                        if matches!(err, CodexErr::TurnAborted) {
-                            return Err(err);
-                        }
-                        let error = err.to_codex_protocol_error();
-                        sess.emit_turn_error_lifecycle(turn_context.as_ref(), error.clone())
-                            .await;
                         return Ok(None);
                     }
                     tool_output_reclamation_state.reset();
                     can_drain_pending_input = !model_needs_follow_up;
                     continue;
+                }
+
+                if used_reclaimed_tool_outputs && !needs_follow_up {
+                    info!(
+                        turn_id = %turn_context.sub_id,
+                        "tool output reclamation remained active through the terminal response"
+                    );
                 }
 
                 if !needs_follow_up {
@@ -509,14 +518,30 @@ pub(crate) async fn run_turn(
                 return Err(err);
             }
             Err(codex_error @ CodexErr::InvalidImageRequest()) => {
-                {
+                let sanitized_tool_output = {
                     let mut state = sess.state.lock().await;
                     error_or_panic(
                         "Invalid image detected; sanitizing tool output to prevent poisoning",
                     );
-                    if state.history.replace_last_turn_images("Invalid image") {
-                        continue;
+                    state.history.replace_last_turn_images("Invalid image")
+                };
+                if sanitized_tool_output {
+                    if active_tool_output_reclamation.is_some()
+                        && let MidTurnCompactOutcome::ErrorReported =
+                            run_mid_turn_context_limit_compact(
+                                &sess,
+                                &step_context,
+                                &mut client_session,
+                                &world_state,
+                            )
+                            .await?
+                    {
+                        return Ok(None);
                     }
+                    if active_tool_output_reclamation.is_some() {
+                        tool_output_reclamation_state.reset();
+                    }
+                    continue;
                 }
 
                 sess.track_turn_codex_error(turn_context.as_ref(), &codex_error);
@@ -1108,6 +1133,36 @@ async fn run_auto_compact(
         run_inline_auto_compact_task(Arc::clone(sess), Arc::clone(turn_context), options).await?;
     }
     Ok(())
+}
+
+async fn run_mid_turn_context_limit_compact(
+    sess: &Arc<Session>,
+    step_context: &Arc<StepContext>,
+    client_session: &mut ModelClientSession,
+    world_state: &Arc<WorldState>,
+) -> CodexResult<MidTurnCompactOutcome> {
+    match run_auto_compact(
+        sess,
+        Arc::clone(step_context),
+        /*fallback_step_context*/ None,
+        client_session,
+        CompactionTaskOptions::auto(
+            InitialContextInjection::BeforeLastUserMessage(Arc::clone(world_state)),
+            CompactionReason::ContextLimit,
+            CompactionPhase::MidTurn,
+        ),
+    )
+    .await
+    {
+        Ok(()) => Ok(MidTurnCompactOutcome::Completed),
+        Err(err @ CodexErr::TurnAborted) => Err(err),
+        Err(err) => {
+            let error = err.to_codex_protocol_error();
+            sess.emit_turn_error_lifecycle(step_context.turn.as_ref(), error)
+                .await;
+            Ok(MidTurnCompactOutcome::ErrorReported)
+        }
+    }
 }
 
 pub(super) fn collect_explicit_app_ids_from_skill_items(
