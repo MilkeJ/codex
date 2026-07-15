@@ -366,7 +366,7 @@ async fn response_item_ids_persist_across_resume_and_preserve_server_ids() -> an
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn synthetic_call_output_id_is_stable_across_resumes() -> anyhow::Result<()> {
+async fn resume_prunes_calls_before_prompt_normalization() -> anyhow::Result<()> {
     let function_call_id = "missing-output-call";
     let thread_id = ThreadId::default();
     let rollout = vec![
@@ -444,26 +444,10 @@ async fn synthetic_call_output_id_is_stable_across_resumes() -> anyhow::Result<(
 
     let requests = response_mock.requests();
     assert_eq!(requests.len(), 2);
-    let first_output = requests[0].function_call_output(function_call_id);
-    let first_output_id = first_output
-        .get("id")
-        .and_then(serde_json::Value::as_str)
-        .expect("reconstructed output should have an item ID")
-        .to_string();
-    let first_output_uuid = first_output_id
-        .strip_prefix("fco_")
-        .expect("synthetic output should use the Responses API prefix");
-    assert_eq!(
-        Uuid::parse_str(first_output_uuid)?.get_version(),
-        Some(uuid::Version::Sha1)
-    );
-    assert_eq!(
-        requests[1]
-            .function_call_output(function_call_id)
-            .get("id")
-            .and_then(serde_json::Value::as_str),
-        Some(first_output_id.as_str())
-    );
+    for request in requests {
+        assert!(request.inputs_of_type("function_call").is_empty());
+        assert!(request.inputs_of_type("function_call_output").is_empty());
+    }
 
     Ok(())
 }
@@ -878,7 +862,7 @@ async fn resume_includes_initial_messages_and_sends_prior_items() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn resume_replays_legacy_js_repl_image_rollout_shapes() {
+async fn resume_prunes_legacy_js_repl_output_but_preserves_injected_image_message() {
     skip_if_no_network!();
 
     // Early js_repl builds persisted image tool results as two separate rollout items:
@@ -973,18 +957,11 @@ async fn resume_replays_legacy_js_repl_image_rollout_shapes() {
 
     let input = resp_mock.single_request().input();
 
-    let legacy_output_index = input
-        .iter()
-        .position(|item| {
-            item.get("type").and_then(|value| value.as_str()) == Some("custom_tool_call_output")
-                && item.get("call_id").and_then(|value| value.as_str()) == Some("legacy-js-call")
-        })
-        .expect("legacy custom tool output should be replayed");
-    assert_eq!(
-        input[legacy_output_index]
-            .get("output")
-            .and_then(|value| value.as_str()),
-        Some("legacy js_repl stdout")
+    assert!(
+        input.iter().all(|item| {
+            item.get("type").and_then(|value| value.as_str()) != Some("custom_tool_call_output")
+        }),
+        "legacy custom tool output should be pruned"
     );
 
     let legacy_image_index = input
@@ -1024,12 +1001,11 @@ async fn resume_replays_legacy_js_repl_image_rollout_shapes() {
         })
         .expect("new user message should be present");
 
-    assert!(legacy_output_index < new_user_index);
     assert!(legacy_image_index < new_user_index);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn resume_replays_image_tool_outputs_with_detail() {
+async fn resume_prunes_image_tool_outputs() {
     skip_if_no_network!();
 
     let image_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
@@ -1137,33 +1113,11 @@ async fn resume_replays_image_tool_outputs_with_detail() {
         .expect("resume conversation");
     test.submit_turn("after resume").await.unwrap();
 
-    let function_output = resp_mock
-        .single_request()
-        .function_call_output(function_call_id);
-    assert_eq!(
-        function_output.get("output"),
-        Some(&serde_json::json!([
-            {
-                "type": "input_image",
-                "image_url": image_url,
-                "detail": "original"
-            }
-        ]))
-    );
-
-    let custom_output = resp_mock
-        .single_request()
-        .custom_tool_call_output(custom_call_id);
-    assert_eq!(
-        custom_output.get("output"),
-        Some(&serde_json::json!([
-            {
-                "type": "input_image",
-                "image_url": image_url,
-                "detail": "original"
-            }
-        ]))
-    );
+    let request = resp_mock.single_request();
+    assert!(request.inputs_of_type("function_call").is_empty());
+    assert!(request.inputs_of_type("function_call_output").is_empty());
+    assert!(request.inputs_of_type("custom_tool_call").is_empty());
+    assert!(request.inputs_of_type("custom_tool_call_output").is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

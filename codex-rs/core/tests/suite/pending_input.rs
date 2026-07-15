@@ -604,6 +604,57 @@ async fn injected_user_input_triggers_follow_up_request_with_deltas() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn terminal_response_prunes_reasoning_before_queued_user_input() {
+    let (gate_completed_tx, gate_completed_rx) = oneshot::channel();
+    let first_chunks = vec![
+        chunk(ev_response_created("resp-1")),
+        chunk(ev_reasoning_item_added("reason-1", &["thinking"])),
+        gated_chunk(
+            gate_completed_rx,
+            vec![
+                ev_reasoning_item("reason-1", &["thinking"], &["private detail"]),
+                ev_message_item_done("msg-1", "first answer"),
+                ev_completed("resp-1"),
+            ],
+        ),
+    ];
+    let second_chunks = vec![
+        chunk(ev_response_created("resp-2")),
+        chunk(ev_message_item_done("msg-2", "second answer")),
+        chunk(ev_completed("resp-2")),
+    ];
+    let (server, _completions) =
+        start_streaming_sse_server(vec![first_chunks, second_chunks]).await;
+    let codex = build_codex(&server).await;
+
+    submit_user_input(&codex, "first prompt").await;
+    wait_for_reasoning_item_started(&codex).await;
+    steer_user_input(&codex, "second prompt").await;
+    let _ = gate_completed_tx.send(());
+    wait_for_turn_complete(&codex).await;
+
+    let requests = server.requests().await;
+    assert_eq!(requests.len(), 2);
+    let second: Value = from_slice(&requests[1]).expect("parse second request");
+    let second_input = second["input"].as_array().expect("second request input");
+    assert!(
+        second_input
+            .iter()
+            .all(|item| item["type"].as_str() != Some("reasoning"))
+    );
+    assert!(second.to_string().contains("first answer"));
+    assert_eq!(
+        message_input_texts(&second, "user")
+            .into_iter()
+            .filter(|text| text == "first prompt" || text == "second prompt")
+            .collect::<Vec<_>>(),
+        vec!["first prompt".to_string(), "second prompt".to_string()]
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn queued_inter_agent_mail_triggers_follow_up_after_reasoning_item() {
     let (gate_reasoning_done_tx, gate_reasoning_done_rx) = oneshot::channel();
 

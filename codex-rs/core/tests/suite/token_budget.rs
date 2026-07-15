@@ -26,6 +26,7 @@ use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_completed_with_tokens;
 use core_test_support::responses::ev_function_call;
+use core_test_support::responses::ev_reasoning_item;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::ev_shell_command_call;
 use core_test_support::responses::mount_compact_json_once;
@@ -963,6 +964,94 @@ async fn token_budget_auto_compact_fallback_uses_buffer_until_new_context() -> R
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn terminal_fallback_is_sampled_on_next_turn_without_pre_turn_rollover() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let fallback_prompt = "save terminal fallback state ".repeat(300);
+    let expected_fallback_prompt = fallback_prompt.clone();
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("terminal-fallback-recorded"),
+                ev_reasoning_item(
+                    "terminal-fallback-reasoning",
+                    &["retired reasoning forces completed-turn pruning"],
+                    &["private retired state"],
+                ),
+                ev_assistant_message("terminal-fallback-answer", "first answer"),
+                ev_completed_with_tokens("terminal-fallback-recorded", /*total_tokens*/ 3_900),
+            ]),
+            sse(vec![
+                ev_response_created("terminal-fallback-sampled"),
+                ev_assistant_message("terminal-fallback-next-answer", "second answer"),
+                ev_completed("terminal-fallback-sampled"),
+            ]),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_model_info_override("gpt-5.4", |model_info| {
+            model_info.effective_context_window_percent = 100;
+        })
+        .with_config(move |config| {
+            config.model_provider.name = "OpenAI (test)".into();
+            config.base_instructions = Some("test".to_string());
+            config.include_permissions_instructions = false;
+            config.include_apps_instructions = false;
+            config.include_collaboration_mode_instructions = false;
+            config.include_skill_instructions = false;
+            config.model_context_window = Some(4_000);
+            config.model_auto_compact_token_limit = Some(2_000);
+            config.token_budget = Some(TokenBudgetConfig {
+                auto_compact_fallback_prompt: Some(fallback_prompt),
+                auto_compact_fallback_buffer_tokens: Some(2_000),
+                ..TokenBudgetConfig::default()
+            });
+            config
+                .features
+                .enable(Feature::TokenBudget)
+                .expect("test config should allow token budget");
+        })
+        .build(&server)
+        .await?;
+
+    test.submit_turn("record an unsampled terminal fallback")
+        .await?;
+    test.submit_turn("sample the terminal fallback on the next turn")
+        .await?;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests[1]
+            .message_input_texts("developer")
+            .iter()
+            .any(|text| text == &expected_fallback_prompt),
+        "the next turn should sample the fallback instead of rolling over before sampling"
+    );
+    assert!(requests[1].body_contains_text("first answer"));
+    assert!(
+        requests[1].body_contains_text("record an unsampled terminal fallback"),
+        "pre-turn rollover would drop the prior window"
+    );
+
+    let thread_id = test.session_configured.thread_id;
+    let first_context = token_budget_contexts(&requests[0]);
+    let second_context = token_budget_contexts(&requests[1]);
+    assert_eq!(first_context.len(), 1);
+    assert_eq!(second_context.len(), 1);
+    let (_, _, first_window_id) = token_budget_window_ids(&first_context[0], thread_id);
+    let (_, second_previous_window_id, second_window_id) =
+        token_budget_window_ids(&second_context[0], thread_id);
+    assert_eq!(second_previous_window_id, None);
+    assert_eq!(second_window_id, first_window_id);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn token_budget_auto_compact_fallback_rolls_over_after_buffer() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -1020,6 +1109,71 @@ async fn token_budget_auto_compact_fallback_rolls_over_after_buffer() -> Result<
     assert!(!requests[2].body_contains_text(AUTO_COMPACT_FALLBACK_PROMPT));
     assert!(!requests[2].body_contains_text("exhaust the fallback buffer"));
     assert_eq!(requests[2].function_call_output_text("buffer-call"), None);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn token_budget_full_context_cap_preempts_fallback_reserve() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("hard-cap-trigger"),
+                ev_function_call("base-limit-call", "get_context_remaining", "{}"),
+                ev_completed_with_tokens("hard-cap-trigger", /*total_tokens*/ 9_500),
+            ]),
+            sse(vec![
+                ev_response_created("hard-cap-reserve"),
+                ev_function_call("hard-cap-call", "get_context_remaining", "{}"),
+                ev_completed_with_tokens("hard-cap-reserve", /*total_tokens*/ 10_000),
+            ]),
+            sse(vec![
+                ev_response_created("hard-cap-fresh-window"),
+                ev_assistant_message("hard-cap-message", "done"),
+                ev_completed("hard-cap-fresh-window"),
+            ]),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_model_info_override("gpt-5.4", |model_info| {
+            model_info.effective_context_window_percent = 100;
+        })
+        .with_config(|config| {
+            config.model_provider.name = "OpenAI (test)".into();
+            config.model_context_window = Some(10_000);
+            config.model_auto_compact_token_limit = Some(9_000);
+            config.token_budget = Some(TokenBudgetConfig {
+                auto_compact_fallback_prompt: Some(AUTO_COMPACT_FALLBACK_PROMPT.to_string()),
+                auto_compact_fallback_buffer_tokens: Some(4_000),
+                ..TokenBudgetConfig::default()
+            });
+            config
+                .features
+                .enable(Feature::TokenBudget)
+                .expect("test config should allow token budget");
+        })
+        .build(&server)
+        .await?;
+
+    test.submit_turn("reach the full context cap during the fallback reserve")
+        .await?;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(requests[1].body_contains_text(AUTO_COMPACT_FALLBACK_PROMPT));
+    assert!(
+        !requests[2].body_contains_text(AUTO_COMPACT_FALLBACK_PROMPT),
+        "the full model context cap should force a fresh window before the reserve is exhausted"
+    );
+    assert!(
+        !requests[2].body_contains_text("reach the full context cap during the fallback reserve")
+    );
+    assert_eq!(requests[2].function_call_output_text("hard-cap-call"), None);
 
     Ok(())
 }
