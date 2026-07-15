@@ -580,7 +580,7 @@ async fn model_change_from_image_to_text_strips_prior_image_content() -> Result<
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn generated_image_is_replayed_for_image_capable_models() -> Result<()> {
+async fn completed_generated_image_call_is_pruned_for_image_capable_models() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = MockServer::start().await;
@@ -654,28 +654,18 @@ async fn generated_image_is_replayed_for_image_capable_models() -> Result<()> {
     assert_eq!(requests.len(), 2, "expected two model requests");
 
     let second_request = requests.last().expect("expected second request");
-    let image_generation_calls = second_request.inputs_of_type("image_generation_call");
-    assert_eq!(
-        image_generation_calls.len(),
-        1,
-        "expected generated image history to be replayed as an image_generation_call"
-    );
-    assert_eq!(
-        image_generation_calls[0]["id"].as_str(),
-        None,
-        "expected the image generation call id to be omitted"
-    );
-    assert_eq!(
-        image_generation_calls[0]["result"].as_str(),
-        Some("Zm9v"),
-        "expected the original generated image payload to be preserved"
+    assert!(
+        second_request
+            .inputs_of_type("image_generation_call")
+            .is_empty(),
+        "completed generated image calls should be pruned"
     );
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn model_change_from_generated_image_to_text_preserves_prior_generated_image_call()
--> Result<()> {
+async fn model_change_from_generated_image_to_text_prunes_prior_generated_image_call() -> Result<()>
+{
     skip_if_no_network!(Ok(()));
 
     let server = MockServer::start().await;
@@ -756,24 +746,15 @@ async fn model_change_from_generated_image_to_text_preserves_prior_generated_ima
     assert_eq!(requests.len(), 2, "expected two model requests");
 
     let second_request = requests.last().expect("expected second request");
-    let image_generation_calls = second_request.inputs_of_type("image_generation_call");
     assert!(
         second_request.message_input_image_urls("user").is_empty(),
         "second request should not rewrite generated images into message input images"
     );
     assert!(
-        image_generation_calls.len() == 1,
-        "second request should preserve the generated image call for text-only models"
-    );
-    assert_eq!(
-        image_generation_calls[0]["id"].as_str(),
-        None,
-        "second request should omit the generated image call id"
-    );
-    assert_eq!(
-        image_generation_calls[0]["result"].as_str(),
-        Some(""),
-        "second request should strip generated image bytes for text-only models"
+        second_request
+            .inputs_of_type("image_generation_call")
+            .is_empty(),
+        "second request should prune the completed generated image call"
     );
     assert!(
         second_request

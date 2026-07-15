@@ -1171,14 +1171,10 @@ impl Session {
         state.get_total_token_usage(state.server_reasoning_included())
     }
 
-    /// Prunes completed response machinery when the request uses the default `current_turn`
-    /// reasoning context. Responses Lite explicitly uses `all_turns`, so its history must remain
-    /// intact.
+    /// Prunes completed response machinery while preserving the active turn's tool chain.
+    /// Responses Lite still sends its required `all_turns` reasoning context, but completed
+    /// reasoning that is removed here is no longer available for the service to render.
     pub(crate) async fn prune_completed_turn_history(&self, turn_context: &TurnContext) {
-        if turn_context.model_info.use_responses_lite {
-            return;
-        }
-
         let pruned = {
             let mut state = self.state.lock().await;
             state.prune_completed_turn_history()
@@ -3704,6 +3700,14 @@ impl Session {
         else {
             return;
         };
+        let estimated_local_tail_tokens =
+            history.estimated_tokens_after_last_model_generated_item();
+        // `get_total_token_usage` adds locally recorded items after the latest model item because
+        // server usage cannot include them. Keep the recomputed cached usage on the same basis so
+        // an unsampled reminder or fallback is not counted once here and again by that accessor.
+        let estimated_server_observed_tokens = estimated_total_tokens
+            .saturating_sub(estimated_local_tail_tokens)
+            .max(0);
         {
             let mut state = self.state.lock().await;
             let mut info = state.token_info().unwrap_or(TokenUsageInfo {
@@ -3717,7 +3721,7 @@ impl Session {
                 cached_input_tokens: 0,
                 output_tokens: 0,
                 reasoning_output_tokens: 0,
-                total_tokens: estimated_total_tokens.max(0),
+                total_tokens: estimated_server_observed_tokens,
             };
 
             if let Some(model_context_window) = turn_context.model_context_window() {
