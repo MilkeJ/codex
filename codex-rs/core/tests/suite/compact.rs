@@ -4549,7 +4549,7 @@ async fn auto_compact_body_after_prefix_still_caps_at_context_window() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn auto_compact_counts_encrypted_reasoning_before_last_user() {
+async fn auto_compact_ignores_pruned_reasoning_before_next_user() {
     skip_if_no_network!();
 
     let server = start_mock_server().await;
@@ -4612,7 +4612,7 @@ async fn auto_compact_counts_encrypted_reasoning_before_last_user() {
         .with_config(move |config| {
             config.chatgpt_base_url = chatgpt_base_url;
             set_test_compact_prompt(config);
-            config.model_auto_compact_token_limit = Some(300);
+            config.model_auto_compact_token_limit = Some(200_000);
             let _ = config.features.disable(Feature::RemoteCompactionV2);
         })
         .build(&server)
@@ -4647,16 +4647,9 @@ async fn auto_compact_counts_encrypted_reasoning_before_last_user() {
         }
     }
 
-    let compact_requests = compact_mock.requests();
-    assert_eq!(
-        compact_requests.len(),
-        1,
-        "remote compaction should run once after the second turn"
-    );
-    assert_eq!(
-        compact_requests[0].path(),
-        "/v1/responses/compact",
-        "remote compaction should hit the compact endpoint"
+    assert!(
+        compact_mock.requests().is_empty(),
+        "pruned reasoning should not trigger remote compaction"
     );
 
     let requests = request_log.requests();
@@ -4665,25 +4658,13 @@ async fn auto_compact_counts_encrypted_reasoning_before_last_user() {
         3,
         "conversation should include three user turns"
     );
-    let second_request_body = requests[1].body_json().to_string();
-    assert!(
-        !second_request_body.contains("REMOTE_COMPACT_SUMMARY"),
-        "second turn should not include compacted history"
-    );
-    let third_request_body = requests[2].body_json().to_string();
-    assert!(
-        third_request_body.contains("REMOTE_COMPACT_SUMMARY")
-            || third_request_body.contains(FINAL_REPLY),
-        "third turn should include compacted history"
-    );
-    assert!(
-        third_request_body.contains("ENCRYPTED_COMPACTION_SUMMARY"),
-        "third turn should include compaction summary item"
-    );
+    assert!(requests[1].inputs_of_type("reasoning").is_empty());
+    assert!(requests[2].inputs_of_type("reasoning").is_empty());
+    assert!(requests[2].body_json().to_string().contains(third_user));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn auto_compact_runs_when_reasoning_header_clears_between_turns() {
+async fn reasoning_header_does_not_restore_pruned_history() {
     skip_if_no_network!();
 
     let server = start_mock_server().await;
@@ -4738,7 +4719,7 @@ async fn auto_compact_runs_when_reasoning_header_clears_between_turns() {
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_config(|config| {
             set_test_compact_prompt(config);
-            config.model_auto_compact_token_limit = Some(300);
+            config.model_auto_compact_token_limit = Some(200_000);
             let _ = config.features.disable(Feature::RemoteCompactionV2);
         })
         .build(&server)
@@ -4763,11 +4744,9 @@ async fn auto_compact_runs_when_reasoning_header_clears_between_turns() {
         wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
     }
 
-    let compact_requests = compact_mock.requests();
-    assert_eq!(
-        compact_requests.len(),
-        1,
-        "remote compaction should run once after the reasoning header clears"
+    assert!(
+        compact_mock.requests().is_empty(),
+        "clearing the reasoning header should not restore pruned reasoning"
     );
 }
 
