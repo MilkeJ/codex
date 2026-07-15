@@ -169,6 +169,10 @@ impl SessionState {
         self.auto_compact_window.snapshot()
     }
 
+    pub(crate) fn clear_auto_compact_window_prefill(&mut self) {
+        self.auto_compact_window.clear_prefill();
+    }
+
     pub(crate) fn claim_token_budget_reminder(&mut self) -> bool {
         self.auto_compact_window.claim_token_budget_reminder()
     }
