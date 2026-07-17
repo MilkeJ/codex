@@ -11,8 +11,8 @@ At the next user turn, Continuum keeps the durable conversational thread but cle
 - **Tester status:** source-only experimental snapshot.
 - **Default branch:** `codex/continuum-context-reclamation`.
 - **Upstream tracking branch:** `main`, kept separate from the Continuum changes.
-- **Tested upstream base:** `622a79ed5667571e12e46b199fbc225fbd4ea00f`.
-- **Tested implementation commit:** `f665fc0e025260c15691de09e2643ddb3eee6921`.
+- **Tested upstream release:** `rust-v0.145.0-alpha.20` at `6bd27778c66ee3fa03bac9f86fc22542b0cf6ea7`.
+- **Tested implementation commit:** `90ccd87c7a08ef0cdfd448cda9a10017aa9ca67d`.
 - **Prebuilt releases:** none currently published.
 - **Runtime configuration:** no Continuum-specific flag is required; the context policy is automatic in this build.
 
@@ -58,12 +58,13 @@ Continuum instead tries a narrower reduction first: retire large, already-consum
 
 The published validation record separates repository tests, production observations, exploratory screens, and confirmatory experiments. Key results include:
 
-- The production build reclaimed tool output twice during one long turn while preserving active reasoning, then correctly fell back to compaction when another reclamation missed both 10% safeguards.
+- The six-commit implementation rebased without conflicts onto the official `0.145.0-alpha.20` prerelease. All 28 focused compatibility tests passed, and the complete `codex-core` run left only host-prerequisite failures and timing flakes that were isolated or reproduced without the Continuum patch.
+- The earlier `0.145.0-alpha.13+continuum.1` production build reclaimed tool output twice during one long turn while preserving active reasoning, then correctly fell back to compaction when another reclamation missed both 10% safeguards.
 - In a 12-block exact-prefix pilot, raw output plus reasoning and reclaimed output plus reasoning both answered 12/12 cases exactly, with 96/96 correct fields and no rereads.
 - The causal control used the same reclaimed request but additionally removed only the reasoning derived after consuming the fixture. That deliberately information-starved arm answered 0/12 cases exactly and 0/96 fields correctly, while the reclaimed-plus-reasoning arm remained perfect.
 - In that specific synthetic fixture, reclamation also reduced the median request by 5,370.5 input tokens and median total usage by 5,337.5 tokens versus the raw control. Those magnitudes are task-specific secondary measurements, not the central result.
 
-The primary result is that retained discovery reasoning remained an effective information channel after the bulky source output was retired. The negative arm was a causal ablation, not a proposed production policy or a context-equivalent performance baseline. These results demonstrate semantic feasibility in the controlled task; they do not prove equivalence across arbitrary coding work or guarantee that reasoning preserves every exact detail from a retired output.
+The primary result is that retained discovery reasoning remained an effective information channel after the bulky source output was retired. The negative arm was a causal ablation, not a proposed production policy or a context-equivalent performance baseline. These results demonstrate semantic feasibility in the controlled task; they do not prove equivalence across arbitrary coding work or guarantee that reasoning preserves every exact detail from a retired output. The controlled behavioral pilot and production observation were performed on the earlier `0.145.0-alpha.13+continuum.1` snapshot; the `alpha.20` catch-up was validated through repository tests, semantic review, and an inactive candidate build rather than by rerunning those model experiments.
 
 The primary causal experiment used direct dynamic function output. Normal file-oriented work under the tested model configuration commonly uses an outer execution tool and custom-tool output, which can also involve code-session state and output formatting. Production reclamation handles both output variants, but a separate outer-execution replication would be needed before making an equally strong empirical claim about every file-tool path.
 
@@ -84,7 +85,7 @@ cd codex-continuum/codex-rs
 # Keep this build isolated from other Codex source trees and sessions.
 export CARGO_TARGET_DIR="$PWD/target/continuum"
 
-cargo build --locked -p codex-cli --bin codex
+cargo build -p codex-cli --bin codex
 "$CARGO_TARGET_DIR/debug/codex" --version
 "$CARGO_TARGET_DIR/debug/codex"
 ```
@@ -98,17 +99,19 @@ Set-Location codex-continuum\codex-rs
 # Keep this build isolated from other Codex source trees and sessions.
 $env:CARGO_TARGET_DIR = Join-Path $PWD "target\continuum"
 
-cargo build --locked -p codex-cli --bin codex
+cargo build -p codex-cli --bin codex
 & (Join-Path $env:CARGO_TARGET_DIR "debug\codex.exe") --version
 & (Join-Path $env:CARGO_TARGET_DIR "debug\codex.exe")
 ```
 
-The public source tree retains the workspace's development version metadata, so a local source build may report `codex-cli 0.0.0`. The separately validated `0.145.0-alpha.13+continuum.1` label came from a build-only version overlay that is intentionally not committed here.
+This source snapshot reports the upstream workspace version `codex-cli 0.145.0-alpha.20`. The official release commit updates `Cargo.toml` but retains `0.0.0` for local workspace packages in its committed `Cargo.lock`, so the first source build normalizes those local package-version entries. Dependency versions and checksums remain unchanged. In a clean clone, inspect `git diff -- codex-rs/Cargo.lock` after building; if it contains only those local version normalizations, `git restore codex-rs/Cargo.lock` returns the checkout to its published bytes.
+
+The separately validated `0.145.0-alpha.20+continuum.1` label came from a build-only version overlay that is intentionally not committed here.
 
 To confirm that the tested implementation is in the checked-out history:
 
 ```bash
-git merge-base --is-ancestor f665fc0e025260c15691de09e2643ddb3eee6921 HEAD
+git merge-base --is-ancestor 90ccd87c7a08ef0cdfd448cda9a10017aa9ca67d HEAD
 ```
 
 An exit status of zero confirms that the implementation commit is an ancestor of the current documentation head.
