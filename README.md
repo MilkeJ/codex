@@ -1,7 +1,9 @@
 > [!IMPORTANT]
 >
-> **Codex Continuum** is an unofficial experimental fork focused on preserving
-> active-turn continuity by reclaiming consumed tool output before compaction.
+> **Codex Continuum** is an unofficial experimental fork for long active turns.
+> It reclaims tool output after the model has consumed it while preserving the
+> active reasoning derived from that output, so the turn can continue from its
+> discoveries before normal compaction becomes necessary.
 > The installer, package-manager, and release links in the upstream README below
 > install official Codex, not Continuum. To build and test this fork, start with
 > [the Continuum guide](CONTINUUM.md). No prebuilt Continuum release is currently

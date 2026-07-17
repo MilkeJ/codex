@@ -1,8 +1,10 @@
 # Codex Continuum
 
-Codex Continuum is an unofficial experimental fork of Codex focused on preserving useful context during long agent turns. It is not an OpenAI-supported distribution.
+Codex Continuum is an unofficial experimental fork of Codex designed to preserve useful working state during long agent turns. It is not an OpenAI-supported distribution.
 
-The fork keeps upstream-compatible behavior wherever possible and changes how live conversation history is reduced when a turn approaches its context boundary.
+When context pressure builds, Continuum can retire large tool output after the model has consumed it while retaining the active reasoning derived from that output. The intended gain is not merely a smaller request: it is to let the same turn continue from its discoveries without carrying every raw blob forward on each sample or compacting the full context sooner than necessary.
+
+At the next user turn, Continuum keeps the durable conversational thread but clears completed reasoning and tool machinery. This gives active-turn working state and between-turn continuity different lifecycles.
 
 ## Project status
 
@@ -20,15 +22,16 @@ Documentation-only commits may appear after the tested implementation commit. Th
 
 ### During an active turn
 
-When another model sample is needed near a context boundary, Continuum first considers reclaiming tool output that the model has already consumed.
+When another model sample is needed near a context boundary, Continuum first considers reclaiming tool output that an earlier sample has already consumed. The central idea is to separate bulky source material from the working conclusions the model derived from it.
 
 The reclamation path:
 
-1. Keeps active reasoning and call structure in the model-visible request.
-2. Keeps the newest, not-yet-consumed tool output intact.
-3. Replaces eligible older output only in the next request copy.
-4. Leaves the canonical local rollout unchanged.
-5. Continues the same turn using a fresh-root request.
+1. Makes an output eligible only after the model has consumed it in an earlier sample.
+2. Keeps the active reasoning that processed the output, together with the call structure.
+3. Keeps the newest, not-yet-consumed tool output intact.
+4. Replaces eligible older output only in the next model-visible request copy.
+5. Leaves the canonical local rollout unchanged.
+6. Continues the same turn using a fresh-root request.
 
 Reclamation runs only when the newly eligible output would both:
 
@@ -37,28 +40,30 @@ Reclamation runs only when the newly eligible output would both:
 
 If either safeguard is not met, normal compaction remains the fallback. Each later reclamation opportunity must independently satisfy the same safeguards.
 
+Retained reasoning is the continuity mechanism, not a promise of lossless memory. It can carry conclusions, relationships, and decisions derived from retired output; an exact line, number, or other detail that was not retained in that reasoning may still require a selective reread. The design trades bulk for processed working state rather than pretending the source material was never needed.
+
 ### Between completed turns
 
-Before sampling a later user turn, Continuum removes completed response machinery such as prior reasoning and tool-call/output items from the live model context. Durable user and assistant messages, developer instructions, additional tools, and compaction records remain available. The persisted rollout remains intact.
+Active reasoning is treated as working state for its current turn, not permanent thread memory. Before sampling a later user turn, Continuum removes completed response machinery such as prior reasoning and tool-call/output items from the live model context. Durable user and assistant messages, developer instructions, additional tools, and compaction records remain available. The persisted rollout remains intact.
 
-This keeps a new topic from automatically carrying the complete working payload of an earlier turn. A follow-up that needs an exact prior detail may need to reconstruct or reread it.
+The design assumes those durable messages normally carry the task-level continuity needed for a related follow-up, while a new user turn is often a distinct next task rather than a request to resume every detail of the previous turn's scratch work. Avoiding that complete prior payload leaves more room for the new task. A follow-up that does need an exact prior detail can selectively reconstruct or reread it instead of carrying all earlier working state by default.
 
 ## Why this exists
 
-Ordinary compaction summarizes a large context to recover space. That is necessary eventually, but performing it too early can discard richer active-turn state while an agent is still working through the same problem.
+Ordinary compaction summarizes a large context to recover space. That is necessary eventually, but performing it too early can replace richer active-turn state while an agent is still working through the same problem.
 
-Continuum instead tries to retire large, already-consumed output first while preserving the reasoning that used it. The goal is to delay compaction when meaningful space can be recovered safely—not to prevent compaction indefinitely.
+Continuum instead tries a narrower reduction first: retire large, already-consumed output while preserving the reasoning that used it. The goal is to recover meaningful headroom while retaining the active problem-solving state, delaying compaction when that trade is safe—not preventing compaction indefinitely.
 
 ## What testing showed
 
 The published validation record separates repository tests, production observations, exploratory screens, and confirmatory experiments. Key results include:
 
-- The production build reclaimed tool output twice during one long turn before correctly falling back to compaction when another reclamation missed both 10% safeguards.
+- The production build reclaimed tool output twice during one long turn while preserving active reasoning, then correctly fell back to compaction when another reclamation missed both 10% safeguards.
 - In a 12-block exact-prefix pilot, raw output plus reasoning and reclaimed output plus reasoning both answered 12/12 cases exactly, with 96/96 correct fields and no rereads.
-- The matched negative control, which removed only the discovery reasoning while keeping the reclaimed request, answered 0/12 cases exactly and 0/96 fields correctly.
-- Reclamation saved a median 5,370.5 input tokens and 5,337.5 total tokens versus the raw control in that pilot.
+- The causal control used the same reclaimed request but additionally removed only the reasoning derived after consuming the fixture. That deliberately information-starved arm answered 0/12 cases exactly and 0/96 fields correctly, while the reclaimed-plus-reasoning arm remained perfect.
+- In that specific synthetic fixture, reclamation also reduced the median request by 5,370.5 input tokens and median total usage by 5,337.5 tokens versus the raw control. Those magnitudes are task-specific secondary measurements, not the central result.
 
-These results demonstrate semantic feasibility in the controlled task. They do not prove equivalence across arbitrary coding work or guarantee that reasoning preserves every exact detail from a retired output.
+The primary result is that retained discovery reasoning remained an effective information channel after the bulky source output was retired. The negative arm was a causal ablation, not a proposed production policy or a context-equivalent performance baseline. These results demonstrate semantic feasibility in the controlled task; they do not prove equivalence across arbitrary coding work or guarantee that reasoning preserves every exact detail from a retired output.
 
 The primary causal experiment used direct dynamic function output. Normal file-oriented work under the tested model configuration commonly uses an outer execution tool and custom-tool output, which can also involve code-session state and output formatting. Production reclamation handles both output variants, but a separate outer-execution replication would be needed before making an equally strong empirical claim about every file-tool path.
 
