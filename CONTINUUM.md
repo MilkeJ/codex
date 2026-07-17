@@ -116,6 +116,26 @@ git merge-base --is-ancestor 90ccd87c7a08ef0cdfd448cda9a10017aa9ca67d HEAD
 
 An exit status of zero confirms that the implementation commit is an ancestor of the current documentation head.
 
+## Updating an existing clone
+
+The tester-facing Continuum branch is maintained as a small, rolling patch stack rebased onto each newly validated upstream release. Rebasing keeps the GitHub history linear and makes the Continuum changes easy to review, but it also replaces the branch's prior commit IDs.
+
+After a published rebase, the safest update is a fresh clone. The previously validated public snapshot is retained by the immutable `continuum-snapshot-2026-07-16` tag.
+
+```bash
+git clone REPOSITORY_URL codex-continuum
+```
+
+If an existing clone has no local work that needs to be preserved, an experienced Git user can instead realign it explicitly:
+
+```bash
+git fetch --tags origin
+git switch codex/continuum-context-reclamation
+git reset --hard origin/codex/continuum-context-reclamation
+```
+
+`git reset --hard` discards uncommitted changes and local commits on that branch. Back up or use a fresh clone when uncertain; an ordinary `git pull` is not the correct update method after a rebase.
+
 ## Testing a build safely
 
 - Keep `CARGO_TARGET_DIR` unique for each source tree or worker.
@@ -140,8 +160,8 @@ Do not publish authentication material, rollout files, private reasoning, raw pr
 
 ## Relationship to upstream
 
-The `main` branch is reserved for tracking upstream Codex. Continuum changes live on the separate tester-facing branch so upstream catch-up work can be rebased, rebuilt, and validated without silently changing the currently tested snapshot.
+The `main` branch is reserved for tracking upstream Codex. Continuum changes live on the separate tester-facing branch as a rolling, rebased patch stack over the latest upstream release that has completed Continuum validation.
 
-Until a new catch-up version is published and validated, this branch should be treated as a fixed experimental snapshot rather than the latest upstream Codex.
+Each public update is rebuilt and validated before the default branch is replaced. The preceding validated head is retained by an immutable snapshot tag so its source remains available even though the rolling branch's commit IDs change. Between audited updates, the public branches and tags are frozen against modification.
 
 For upstream product documentation, installation methods, security reporting, and contribution guidance, continue to use the links in [README.md](README.md).

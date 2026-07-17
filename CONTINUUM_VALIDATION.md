@@ -20,10 +20,10 @@ Only aggregate synthetic results, version numbers, source identifiers, cryptogra
 | Source tree                                             | `86b8be5c550b269cb852b35d030636af94337693`                         |
 | Canonical `git diff <base>..<head>` byte-stream SHA-256 | `ea1c00dbc74a54137573726abea12ea3c679adba29b77b4f848ebac8f2197471` |
 | Patch scope                                             | 26 files, 2,495 insertions, 268 deletions                          |
-| Inactive candidate build version                        | `0.145.0-alpha.20+continuum.1`                                     |
-| Inactive candidate binary SHA-256                       | `36a8b64910530cef05a5580db84b70d2a9c6d59b99af2df63054b79dfdc1991d` |
+| Verified active build version                           | `0.145.0-alpha.20+continuum.1`                                     |
+| Verified active binary SHA-256                          | `36a8b64910530cef05a5580db84b70d2a9c6d59b99af2df63054b79dfdc1991d` |
 
-The inactive candidate used a version-only build overlay. That overlay is not part of the six source commits. The earlier production observation and behavioral experiments below remain tied to the original `0.145.0-alpha.13+continuum.1` build and are labeled accordingly.
+The verified build used a version-only build overlay. That overlay is not part of the six source commits. The earlier production observation and behavioral experiments below remain tied to the original `0.145.0-alpha.13+continuum.1` build and are labeled accordingly.
 
 ## Repository and build validation
 
@@ -38,7 +38,8 @@ The inactive candidate used a version-only build overlay. That overlay is not pa
 - Gitleaks `8.30.1` and explicit personal/path/credential scans reported zero findings across the six-commit range.
 - The official release commit changes `Cargo.toml` to `0.145.0-alpha.20` while leaving local workspace package entries in `Cargo.lock` at `0.0.0`; Cargo's first unlocked build normalizes only those local version fields. No dependency version or checksum changes are part of Continuum.
 - The CLI built offline without warnings as `0.145.0-alpha.20+continuum.1`.
-- `codex --version`, `codex app-server --help`, and a no-turn app-server initialize/shutdown handshake passed against the immutable inactive candidate.
+- `codex --version`, `codex app-server --help`, and a no-turn app-server initialize/shutdown handshake passed against the immutable candidate.
+- After activation and an application restart, the live app-server process, persisted CLI path, executable version, size, and SHA-256 all independently matched that immutable `0.145.0-alpha.20+continuum.1` candidate.
 
 Tests were run before the final required fix/format stage and were not rerun afterward, following the repository workflow.
 
@@ -274,6 +275,5 @@ The evidence supports the following bounded conclusions:
 Remaining validation work is optional or environmental rather than a blocker for the demonstrated behavior:
 
 - Repeat the core or full workspace run on a host with symbolic-link privilege, unmanaged sandbox/firewall setup, and every upstream helper if a completely green suite claim is required.
-- Exercise the inactive `0.145.0-alpha.20+continuum.1` candidate in normal interactive use before making it the active local runtime.
 - Run a small outer-execution/custom-tool-output replication before making a file-tool-specific empirical claim.
 - Revisit completed-turn reasoning policy separately if continuity across user turns becomes a higher priority than minimizing carried context.
