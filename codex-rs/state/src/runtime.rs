@@ -13,6 +13,7 @@ use crate::ThreadMetadataBuilder;
 use crate::ThreadsPage;
 use crate::apply_rollout_item;
 use crate::migrations::repair_legacy_recency_migration_version;
+use crate::migrations::run_migrator_with_eol_compatible_checksums;
 use crate::migrations::runtime_goals_migrator;
 use crate::migrations::runtime_logs_migrator;
 use crate::migrations::runtime_memories_migrator;
@@ -451,7 +452,7 @@ async fn open_sqlite(
         if matches!(spec.kind, DbKind::State) {
             repair_legacy_recency_migration_version(&pool, migrator).await?;
         }
-        migrator.run(&pool).await.map_err(anyhow::Error::from)
+        run_migrator_with_eol_compatible_checksums(&pool, migrator).await
     }
     .await;
     crate::telemetry::record_init_result(
