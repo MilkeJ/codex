@@ -1,3 +1,14 @@
+> [!IMPORTANT]
+>
+> **Codex Continuum** is an unofficial experimental fork for long active turns.
+> It reclaims tool output after the model has consumed it while preserving the
+> active reasoning derived from that output, so the turn can continue from its
+> discoveries before normal compaction becomes necessary.
+> The installer, package-manager, and release links in the upstream README below
+> install official Codex, not Continuum. To build and test this fork, start with
+> [the Continuum guide](CONTINUUM.md). No prebuilt Continuum release is currently
+> published.
+
 <p align="center"><strong>Codex CLI</strong> is a coding agent from OpenAI that runs locally on your computer.
 <p align="center">
   <img src="https://github.com/openai/codex/blob/main/.github/codex-cli-splash.png" alt="Codex CLI splash" width="80%" />
