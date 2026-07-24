@@ -361,10 +361,10 @@ pub(crate) fn should_keep_compacted_history_item(item: &ResponseItem) -> bool {
 
 pub(crate) fn trim_function_call_history_to_fit_context_window(
     history: &mut ContextManager,
-    turn_context: &TurnContext,
+    context_window: Option<i64>,
     base_instructions: &BaseInstructions,
 ) -> (usize, i64) {
-    let Some(context_window) = turn_context.model_context_window() else {
+    let Some(context_window) = context_window else {
         return (0, 0);
     };
     // Keep the unclamped total so replacing an item cannot lose an overflow hidden by i64
@@ -384,8 +384,8 @@ pub(crate) fn trim_function_call_history_to_fit_context_window(
     let initial_estimated_tokens = i64::try_from(estimated_tokens).unwrap_or(i64::MAX);
     let mut rewritten_items = Vec::new();
 
-    // Reclaimed histories retain reasoning between older tool outputs. Scan past those
-    // non-output items, but keep upstream's single-copy replacement strategy.
+    // Reclaimed histories retain reasoning and call machinery between older tool outputs. Scan
+    // past those same-turn items, but do not trim across the current user-message boundary.
     for (index, (item, item_tokens)) in original_items
         .iter()
         .zip(item_token_estimates)
@@ -393,6 +393,9 @@ pub(crate) fn trim_function_call_history_to_fit_context_window(
         .rev()
     {
         if i64::try_from(estimated_tokens).unwrap_or(i64::MAX) <= context_window {
+            break;
+        }
+        if is_user_message_boundary(item) {
             break;
         }
         let Some(rewritten_item) = rewritten_output_for_context_window(item) else {
@@ -416,6 +419,10 @@ pub(crate) fn trim_function_call_history_to_fit_context_window(
     let final_estimated_tokens = i64::try_from(estimated_tokens).unwrap_or(i64::MAX);
     let estimated_deleted_tokens = initial_estimated_tokens.saturating_sub(final_estimated_tokens);
     (rewritten_outputs, estimated_deleted_tokens)
+}
+
+fn is_user_message_boundary(item: &ResponseItem) -> bool {
+    matches!(item, ResponseItem::Message { role, .. } if role == "user")
 }
 
 fn rewritten_output_for_context_window(item: &ResponseItem) -> Option<ResponseItem> {
@@ -467,5 +474,126 @@ fn truncated_output_payload(output: &FunctionCallOutputPayload) -> FunctionCallO
     FunctionCallOutputPayload {
         body: FunctionCallOutputBody::Text(CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE.to_string()),
         success: output.success,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codex_protocol::models::ContentItem;
+
+    fn function_call(call_id: &str) -> ResponseItem {
+        ResponseItem::FunctionCall {
+            id: None,
+            name: "test_tool".to_string(),
+            namespace: None,
+            arguments: "{}".to_string(),
+            call_id: call_id.to_string(),
+            internal_chat_message_metadata_passthrough: None,
+        }
+    }
+
+    fn function_call_output(call_id: &str, text: &str) -> ResponseItem {
+        ResponseItem::FunctionCallOutput {
+            id: None,
+            call_id: call_id.to_string(),
+            output: FunctionCallOutputPayload::from_text(text.to_string()),
+            internal_chat_message_metadata_passthrough: None,
+        }
+    }
+
+    fn user_message(text: &str) -> ResponseItem {
+        ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: text.to_string(),
+            }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        }
+    }
+
+    fn output_text(history: &ContextManager, call_id: &str) -> Option<String> {
+        history.raw_items().iter().find_map(|item| match item {
+            ResponseItem::FunctionCallOutput {
+                call_id: candidate,
+                output,
+                ..
+            } if candidate == call_id => output.text_content().map(str::to_string),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn trim_scans_same_turn_machinery_without_crossing_user_boundary() {
+        let old_output = "old output that must remain".repeat(100);
+        let first_current_output = "first current output".repeat(100);
+        let second_current_output = "second current output".repeat(100);
+        let mut history = ContextManager::new();
+        history.replace(vec![
+            function_call("old"),
+            function_call_output("old", &old_output),
+            user_message("current turn"),
+            function_call("current-1"),
+            function_call_output("current-1", &first_current_output),
+            function_call("current-2"),
+            function_call_output("current-2", &second_current_output),
+        ]);
+
+        let (rewritten_outputs, estimated_deleted_tokens) =
+            trim_function_call_history_to_fit_context_window(
+                &mut history,
+                Some(0),
+                &BaseInstructions {
+                    text: String::new(),
+                },
+            );
+
+        assert_eq!(rewritten_outputs, 2);
+        assert!(estimated_deleted_tokens > 0);
+        assert_eq!(output_text(&history, "old"), Some(old_output));
+        assert_eq!(
+            output_text(&history, "current-1"),
+            Some(CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE.to_string())
+        );
+        assert_eq!(
+            output_text(&history, "current-2"),
+            Some(CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE.to_string())
+        );
+    }
+
+    #[test]
+    fn trim_estimate_accounts_for_session_base_instructions() {
+        let mut history = ContextManager::new();
+        history.replace(vec![
+            function_call("current"),
+            function_call_output("current", &"current output".repeat(100)),
+        ]);
+        let short_base = BaseInstructions {
+            text: "short".to_string(),
+        };
+        let long_base = BaseInstructions {
+            text: "long session instructions ".repeat(1_000),
+        };
+        let context_window = history
+            .estimate_token_count_with_base_instructions(&short_base)
+            .expect("short-base token estimate")
+            .saturating_add(1);
+
+        let mut short_base_history = history.clone();
+        let (short_base_rewrites, _) = trim_function_call_history_to_fit_context_window(
+            &mut short_base_history,
+            Some(context_window),
+            &short_base,
+        );
+        let (long_base_rewrites, _) = trim_function_call_history_to_fit_context_window(
+            &mut history,
+            Some(context_window),
+            &long_base,
+        );
+
+        assert_eq!(short_base_rewrites, 0);
+        assert_eq!(long_base_rewrites, 1);
     }
 }

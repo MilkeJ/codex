@@ -240,6 +240,7 @@ pub(crate) async fn run_turn(
     // 2. After auto-compact, when model/tool continuation needs to resume before any steer.
 
     let mut next_step_context = Some(first_step_context);
+    let mut prune_other_turns_before_first_sample = true;
     loop {
         // Note that pending_input would be something like a message the user
         // submitted through the UI while the model was running. Though the UI
@@ -283,7 +284,12 @@ pub(crate) async fn run_turn(
             // Construct the input that we will send to the model.
             let (sampling_request_input, sampling_request_history_len): (Vec<ResponseItem>, usize) =
                 async {
-                    let mut history = sess.clone_history().await;
+                    let mut history = if std::mem::take(&mut prune_other_turns_before_first_sample)
+                    {
+                        sess.clone_history_for_active_turn(&turn_context).await
+                    } else {
+                        sess.clone_history().await
+                    };
                     let history_len = history.raw_items().len();
                     if let Some(reclamation) = active_tool_output_reclamation.as_ref()
                         && !reclamation.apply(&mut history)

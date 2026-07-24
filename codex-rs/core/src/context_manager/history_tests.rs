@@ -470,6 +470,47 @@ fn cloned_history_shares_items_until_mutated() {
 }
 
 #[test]
+fn prune_transient_items_from_other_turns_preserves_active_and_unstamped_items() {
+    let function_call = |call_id: &str, turn_id: Option<&str>| {
+        let mut item = ResponseItem::FunctionCall {
+            id: None,
+            name: "test_tool".to_string(),
+            namespace: None,
+            arguments: "{}".to_string(),
+            call_id: call_id.to_string(),
+            internal_chat_message_metadata_passthrough: None,
+        };
+        if let Some(turn_id) = turn_id {
+            item.set_turn_id_if_missing(turn_id);
+        }
+        item
+    };
+    let durable_message = assistant_msg("durable");
+    let completed_call = function_call("completed", Some("completed-turn"));
+    let active_call = function_call("active", Some("active-turn"));
+    let unstamped_call = function_call("unstamped", None);
+    let mut history = ContextManager::new();
+    history.replace(vec![
+        durable_message.clone(),
+        completed_call,
+        active_call.clone(),
+        unstamped_call.clone(),
+    ]);
+    let previous_version = history.history_version();
+
+    assert!(history.prune_transient_items_from_other_turns("active-turn"));
+    assert_eq!(
+        history.raw_items(),
+        &[durable_message, active_call, unstamped_call]
+    );
+    assert_eq!(
+        history.history_version(),
+        previous_version.saturating_add(1)
+    );
+    assert!(!history.prune_transient_items_from_other_turns("active-turn"));
+}
+
+#[test]
 fn drop_last_n_user_turns_treats_inter_agent_assistant_messages_as_instruction_turns() {
     let first_turn = user_input_text_msg("first");
     let first_reply = assistant_msg("done");

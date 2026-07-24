@@ -121,6 +121,19 @@ impl SessionState {
         pruned
     }
 
+    pub(crate) fn clone_history_pruning_other_turns(
+        &mut self,
+        active_turn_id: &str,
+    ) -> (ContextManager, bool) {
+        let pruned = self
+            .history
+            .prune_transient_items_from_other_turns(active_turn_id);
+        if pruned {
+            self.auto_compact_window.clear_prefill();
+        }
+        (self.history.clone(), pruned)
+    }
+
     pub(crate) fn replace_history(
         &mut self,
         items: Vec<ResponseItem>,

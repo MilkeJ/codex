@@ -3497,6 +3497,20 @@ impl Session {
         state.clone_history()
     }
 
+    pub(crate) async fn clone_history_for_active_turn(
+        &self,
+        turn_context: &TurnContext,
+    ) -> ContextManager {
+        let (history, pruned) = {
+            let mut state = self.state.lock().await;
+            state.clone_history_pruning_other_turns(&turn_context.sub_id)
+        };
+        if pruned {
+            self.recompute_token_usage(turn_context).await;
+        }
+        history
+    }
+
     pub(crate) async fn current_window_id(&self) -> String {
         let state = self.state.lock().await;
         let thread_id = self.thread_id;

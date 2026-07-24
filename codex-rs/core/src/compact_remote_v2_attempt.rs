@@ -51,7 +51,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
     let (rewritten_outputs, estimated_deleted_tokens) =
         trim_function_call_history_to_fit_context_window(
             &mut history,
-            turn_context.as_ref(),
+            turn_context.model_context_window(),
             &base_instructions,
         );
     if rewritten_outputs > 0 {

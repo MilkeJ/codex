@@ -58,8 +58,6 @@ use serde_json::json;
 use tokio::time::Duration;
 use wiremock::ResponseTemplate;
 
-const CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE: &str =
-    "Output exceeded the available model context and was truncated";
 const TEST_WAV_SAMPLE_RATE: u32 = 8_000;
 
 fn pcm_wav_data_url(sample_count: u32) -> String {
@@ -1595,7 +1593,8 @@ async fn remote_compact_runs_automatically() -> Result<()> {
 
 #[cfg_attr(target_os = "windows", ignore)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remote_compact_trims_function_call_history_to_fit_context_window() -> Result<()> {
+async fn manual_remote_compact_after_pre_turn_context_limit_uses_last_completed_history()
+-> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let first_user_message = "turn with retained shell call";
@@ -1603,7 +1602,6 @@ async fn remote_compact_trims_function_call_history_to_fit_context_window() -> R
     let retained_call_id = "retained-call";
     let trimmed_call_id = "trimmed-call";
     let retained_command = "echo retained-shell-output";
-    let trimmed_command = "yes x | head -n 3000";
 
     let harness = TestCodexHarness::with_builder(
         test_codex()
@@ -1626,10 +1624,6 @@ async fn remote_compact_trims_function_call_history_to_fit_context_window() -> R
             sse(vec![
                 responses::ev_assistant_message("retained-assistant", "retained complete"),
                 responses::ev_completed("retained-final-response"),
-            ]),
-            sse(vec![
-                responses::ev_shell_command_call(trimmed_call_id, trimmed_command),
-                responses::ev_completed("trimmed-call-response"),
             ]),
         ],
     )
@@ -1681,38 +1675,36 @@ async fn remote_compact_trims_function_call_history_to_fit_context_window() -> R
         "expected compact request to retain earlier user history"
     );
     assert!(
-        user_messages
+        !user_messages
             .iter()
             .any(|message| message == second_user_message),
-        "expected compact request to retain the user boundary message"
+        "expected the rolled-back over-limit turn to be absent from compact history"
     );
 
     assert!(
-        compact_request.has_function_call(retained_call_id)
+        !compact_request.has_function_call(retained_call_id)
             && compact_request
                 .function_call_output_text(retained_call_id)
-                .is_some(),
-        "expected compact request to keep the older function call/result pair"
+                .is_none(),
+        "expected completed-turn pruning to retire the older function call/result pair"
     );
     assert!(
-        compact_request.has_function_call(trimmed_call_id),
-        "expected compact request to retain the trailing function call"
-    );
-    assert_eq!(
-        compact_request.function_call_output_text(trimmed_call_id),
-        Some(CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE.to_string()),
-        "expected compact request to rewrite the trailing function call output past the boundary"
+        !compact_request.has_function_call(trimmed_call_id)
+            && compact_request
+                .function_call_output_text(trimmed_call_id)
+                .is_none(),
+        "expected the rolled-back over-limit call/result pair to be absent"
     );
 
     assert_eq!(
         compact_request.inputs_of_type("function_call").len(),
-        2,
-        "expected both function calls after rewriting the trailing output"
+        0,
+        "expected completed and rolled-back function calls to be absent"
     );
     assert_eq!(
         compact_request.inputs_of_type("function_call_output").len(),
-        2,
-        "expected both function call outputs after rewriting the trailing output"
+        0,
+        "expected completed and rolled-back function outputs to be absent"
     );
 
     Ok(())
@@ -1720,7 +1712,8 @@ async fn remote_compact_trims_function_call_history_to_fit_context_window() -> R
 
 #[cfg_attr(target_os = "windows", ignore)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remote_compact_rewrites_multiple_trailing_function_call_outputs() -> Result<()> {
+async fn manual_remote_compact_after_pre_turn_context_limit_drops_unstarted_parallel_turn()
+-> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let first_user_message = "turn with retained shell call";
@@ -1729,8 +1722,6 @@ async fn remote_compact_rewrites_multiple_trailing_function_call_outputs() -> Re
     let first_trimmed_call_id = "first-trimmed-call";
     let second_trimmed_call_id = "second-trimmed-call";
     let retained_command = "echo retained-shell-output";
-    let first_trimmed_command = "yes x | head -n 3000";
-    let second_trimmed_command = "yes y | head -n 3000";
 
     let harness = TestCodexHarness::with_builder(
         test_codex()
@@ -1753,11 +1744,6 @@ async fn remote_compact_rewrites_multiple_trailing_function_call_outputs() -> Re
             sse(vec![
                 responses::ev_assistant_message("retained-assistant", "retained complete"),
                 responses::ev_completed("retained-final-response"),
-            ]),
-            sse(vec![
-                responses::ev_shell_command_call(first_trimmed_call_id, first_trimmed_command),
-                responses::ev_shell_command_call(second_trimmed_call_id, second_trimmed_command),
-                responses::ev_completed("parallel-call-response"),
             ]),
         ],
     )
@@ -1801,38 +1787,47 @@ async fn remote_compact_rewrites_multiple_trailing_function_call_outputs() -> Re
     wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
 
     let compact_request = compact_mock.single_request();
+    let user_messages = compact_request.message_input_texts("user");
     assert!(
-        compact_request.has_function_call(retained_call_id)
+        user_messages
+            .iter()
+            .any(|message| message == first_user_message),
+        "expected compact request to retain the last completed turn"
+    );
+    assert!(
+        !user_messages
+            .iter()
+            .any(|message| message == second_user_message),
+        "expected the rolled-back over-limit parallel turn to be absent"
+    );
+    assert!(
+        !compact_request.has_function_call(retained_call_id)
             && compact_request
                 .function_call_output_text(retained_call_id)
-                .is_some(),
-        "expected compact request to keep the older function call/result pair"
+                .is_none(),
+        "expected completed-turn pruning to retire the older function call/result pair"
     );
     assert!(
-        compact_request.has_function_call(first_trimmed_call_id)
-            && compact_request.has_function_call(second_trimmed_call_id),
-        "expected compact request to retain both trailing parallel function calls"
-    );
-    assert_eq!(
-        compact_request.function_call_output_text(first_trimmed_call_id),
-        Some(CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE.to_string()),
-        "expected compact request to rewrite the first trailing function call output"
-    );
-    assert_eq!(
-        compact_request.function_call_output_text(second_trimmed_call_id),
-        Some(CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE.to_string()),
-        "expected compact request to rewrite the second trailing function call output"
+        !compact_request.has_function_call(first_trimmed_call_id)
+            && !compact_request.has_function_call(second_trimmed_call_id)
+            && compact_request
+                .function_call_output_text(first_trimmed_call_id)
+                .is_none()
+            && compact_request
+                .function_call_output_text(second_trimmed_call_id)
+                .is_none(),
+        "expected rolled-back parallel function call/results to be absent"
     );
 
     assert_eq!(
         compact_request.inputs_of_type("function_call").len(),
-        3,
-        "expected all function calls after rewriting trailing outputs"
+        0,
+        "expected completed and rolled-back function calls to be absent"
     );
     assert_eq!(
         compact_request.inputs_of_type("function_call_output").len(),
-        3,
-        "expected all function call outputs after rewriting trailing outputs"
+        0,
+        "expected completed and rolled-back function outputs to be absent"
     );
 
     Ok(())
@@ -1840,7 +1835,8 @@ async fn remote_compact_rewrites_multiple_trailing_function_call_outputs() -> Re
 
 #[cfg_attr(target_os = "windows", ignore)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn auto_remote_compact_trims_function_call_history_to_fit_context_window() -> Result<()> {
+async fn auto_remote_compact_after_pre_turn_context_limit_uses_last_completed_history() -> Result<()>
+{
     skip_if_no_network!(Ok(()));
 
     let first_user_message = "turn with retained shell call";
@@ -1848,7 +1844,6 @@ async fn auto_remote_compact_trims_function_call_history_to_fit_context_window()
     let retained_call_id = "retained-call";
     let trimmed_call_id = "trimmed-call";
     let retained_command = "echo retained-shell-output";
-    let trimmed_command = "yes x | head -n 3000";
     let harness = TestCodexHarness::with_builder(
         test_codex()
             .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
@@ -1874,17 +1869,6 @@ async fn auto_remote_compact_trims_function_call_history_to_fit_context_window()
                 responses::ev_assistant_message("retained-assistant", "retained complete"),
                 responses::ev_completed("retained-final-response"),
             ]),
-            sse(vec![
-                responses::ev_shell_command_call(trimmed_call_id, trimmed_command),
-                responses::ev_completed_with_tokens(
-                    "trimmed-call-response",
-                    /*total_tokens*/ 100,
-                ),
-            ]),
-            sse(vec![responses::ev_completed_with_tokens(
-                "trimmed-final-response",
-                /*total_tokens*/ 500_000,
-            )]),
         ],
     )
     .await;
@@ -1951,38 +1935,36 @@ async fn auto_remote_compact_trims_function_call_history_to_fit_context_window()
         "expected compact request to retain earlier user history"
     );
     assert!(
-        user_messages
+        !user_messages
             .iter()
             .any(|message| message == second_user_message),
-        "expected compact request to retain the user boundary message"
+        "expected the rolled-back over-limit turn to be absent from compact history"
     );
 
     assert!(
-        compact_request.has_function_call(retained_call_id)
+        !compact_request.has_function_call(retained_call_id)
             && compact_request
                 .function_call_output_text(retained_call_id)
-                .is_some(),
-        "expected compact request to keep the older function call/result pair"
+                .is_none(),
+        "expected completed-turn pruning to retire the older function call/result pair"
     );
     assert!(
-        compact_request.has_function_call(trimmed_call_id),
-        "expected compact request to retain the trailing function call"
-    );
-    assert_eq!(
-        compact_request.function_call_output_text(trimmed_call_id),
-        Some(CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE.to_string()),
-        "expected compact request to rewrite the trailing function call output past the boundary"
+        !compact_request.has_function_call(trimmed_call_id)
+            && compact_request
+                .function_call_output_text(trimmed_call_id)
+                .is_none(),
+        "expected the rolled-back over-limit call/result pair to be absent"
     );
 
     assert_eq!(
         compact_request.inputs_of_type("function_call").len(),
-        2,
-        "expected both function calls after rewriting the trailing output"
+        0,
+        "expected completed and rolled-back function calls to be absent"
     );
     assert_eq!(
         compact_request.inputs_of_type("function_call_output").len(),
-        2,
-        "expected both function call outputs after rewriting the trailing output"
+        0,
+        "expected completed and rolled-back function outputs to be absent"
     );
 
     Ok(())
@@ -2195,7 +2177,7 @@ async fn auto_remote_compact_failure_stops_agent_loop() -> Result<()> {
 
 #[cfg_attr(target_os = "windows", ignore)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn remote_compact_trim_estimate_uses_session_base_instructions() -> Result<()> {
+async fn remote_compact_uses_session_base_instructions_after_over_limit_tool_turn() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let first_user_message = "turn with baseline shell call";
@@ -2205,7 +2187,6 @@ async fn remote_compact_trim_estimate_uses_session_base_instructions() -> Result
     let override_retained_call_id = "override-retained-call";
     let override_trailing_call_id = "override-trailing-call";
     let retained_command = "printf retained-shell-output";
-    let trailing_command = "printf '%020000d' 0";
 
     let baseline_harness = TestCodexHarness::with_builder(
         test_codex()
@@ -2228,13 +2209,6 @@ async fn remote_compact_trim_estimate_uses_session_base_instructions() -> Result
                 responses::ev_assistant_message("baseline-retained-assistant", "retained complete"),
                 responses::ev_completed("baseline-retained-final-response"),
             ]),
-            sse(vec![
-                responses::ev_shell_command_call(baseline_trailing_call_id, trailing_command),
-                responses::ev_completed("baseline-trailing-call-response"),
-            ]),
-            sse(vec![responses::ev_completed(
-                "baseline-trailing-final-response",
-            )]),
         ],
     )
     .await;
@@ -2287,12 +2261,12 @@ async fn remote_compact_trim_estimate_uses_session_base_instructions() -> Result
 
     let baseline_compact_request = baseline_compact_mock.single_request();
     assert!(
-        baseline_compact_request.has_function_call(baseline_retained_call_id),
-        "expected baseline compact request to retain older function call history"
+        !baseline_compact_request.has_function_call(baseline_retained_call_id),
+        "expected completed-turn pruning to retire older function call history"
     );
     assert!(
-        baseline_compact_request.has_function_call(baseline_trailing_call_id),
-        "expected baseline compact request to retain trailing function call history"
+        !baseline_compact_request.has_function_call(baseline_trailing_call_id),
+        "expected the rolled-back over-limit call to be absent"
     );
 
     let baseline_input_tokens = estimate_compact_input_tokens(&baseline_compact_request);
@@ -2336,13 +2310,6 @@ async fn remote_compact_trim_estimate_uses_session_base_instructions() -> Result
                 responses::ev_assistant_message("override-retained-assistant", "retained complete"),
                 responses::ev_completed("override-retained-final-response"),
             ]),
-            sse(vec![
-                responses::ev_shell_command_call(override_trailing_call_id, trailing_command),
-                responses::ev_completed("override-trailing-call-response"),
-            ]),
-            sse(vec![responses::ev_completed(
-                "override-trailing-final-response",
-            )]),
         ],
     )
     .await;
@@ -2399,17 +2366,12 @@ async fn remote_compact_trim_estimate_uses_session_base_instructions() -> Result
         override_base_instructions
     );
     assert!(
-        override_compact_request.has_function_call(override_retained_call_id),
-        "expected remote compact request to preserve older function call history"
+        !override_compact_request.has_function_call(override_retained_call_id),
+        "expected completed-turn pruning to retire older function call history"
     );
     assert!(
-        override_compact_request.has_function_call(override_trailing_call_id),
-        "expected remote compact request to preserve trailing function call history with override instructions"
-    );
-    assert_eq!(
-        override_compact_request.function_call_output_text(override_trailing_call_id),
-        Some(CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE.to_string()),
-        "expected remote compact request to rewrite trailing function call output with override instructions"
+        !override_compact_request.has_function_call(override_trailing_call_id),
+        "expected the rolled-back over-limit call to be absent with override instructions"
     );
 
     Ok(())

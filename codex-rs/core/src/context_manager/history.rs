@@ -164,12 +164,30 @@ impl ContextManager {
     /// longer uses. Persisted rollout history is unaffected because this only changes the live
     /// model context.
     pub(crate) fn prune_completed_turn_items(&mut self) -> bool {
-        let previous_len = self.items.len();
-        self.items.retain(is_durable_completed_turn_item);
-        if self.items.len() == previous_len {
+        if self.items.iter().all(is_durable_completed_turn_item) {
             return false;
         }
 
+        Arc::make_mut(&mut self.items).retain(is_durable_completed_turn_item);
+        self.history_version = self.history_version.saturating_add(1);
+        true
+    }
+
+    /// Removes transient items stamped with a completed turn after the normal boundary prune.
+    /// This closes a race where an interrupted tool can finish recording while the next turn is
+    /// being prepared. Unstamped items are retained because they may belong to the active turn.
+    pub(crate) fn prune_transient_items_from_other_turns(&mut self, active_turn_id: &str) -> bool {
+        let should_retain = |item: &ResponseItem| {
+            is_durable_completed_turn_item(item)
+                || item
+                    .turn_id()
+                    .is_none_or(|turn_id| turn_id == active_turn_id)
+        };
+        if self.items.iter().all(should_retain) {
+            return false;
+        }
+
+        Arc::make_mut(&mut self.items).retain(should_retain);
         self.history_version = self.history_version.saturating_add(1);
         true
     }

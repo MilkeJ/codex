@@ -1,4 +1,3 @@
-use assert_matches::assert_matches;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,7 +13,6 @@ use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
-use regex_lite::Regex;
 use serde_json::json;
 
 /// Integration test: spawn a long‑running shell_command tool via a mocked Responses SSE
@@ -67,12 +65,10 @@ async fn interrupt_long_running_tool_emits_turn_aborted() {
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnAborted(_))).await;
 }
 
-/// After an interrupt we expect the next request to the model to include both
-/// the original tool call and an `"aborted"` `function_call_output`. This test
-/// exercises the follow-up flow: it sends another user turn, inspects the mock
-/// responses server, and ensures the model receives the synthesized abort.
+/// After an interrupt, completed-turn pruning should remove the interrupted tool machinery before
+/// the next request. The durable `<turn_aborted>` marker is covered separately below.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn interrupt_tool_records_history_entries() {
+async fn interrupt_tool_history_is_pruned_before_follow_up() {
     let command = "sleep 60";
     let call_id = "call-history";
 
@@ -144,32 +140,13 @@ async fn interrupt_tool_records_history_entries() {
         "expected two calls to the responses API, got {}",
         requests.len()
     );
-
     assert!(
-        response_mock.saw_function_call(call_id),
-        "function call not recorded in responses payload"
+        !response_mock.saw_function_call(call_id),
+        "interrupted function call should be pruned from the follow-up request"
     );
-    let output = response_mock
-        .function_call_output_text(call_id)
-        .expect("missing function_call_output text");
-    let re = Regex::new(r"^Wall time: ([0-9]+(?:\.[0-9])?) seconds\naborted by user$")
-        .expect("compile regex");
-    let captures = re.captures(&output);
-    assert_matches!(
-        captures.as_ref(),
-        Some(caps) if caps.get(1).is_some(),
-        "aborted message with elapsed seconds"
-    );
-    let secs: f32 = captures
-        .expect("aborted message with elapsed seconds")
-        .get(1)
-        .unwrap()
-        .as_str()
-        .parse()
-        .unwrap();
     assert!(
-        secs >= 0.1,
-        "expected at least one tenth of a second of elapsed time, got {secs}"
+        response_mock.function_call_output_text(call_id).is_none(),
+        "interrupted function output should be pruned from the follow-up request"
     );
 }
 
