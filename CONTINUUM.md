@@ -8,14 +8,15 @@ At the next user turn, Continuum keeps the durable conversational thread but cle
 
 ## Project status
 
-- **Tester status:** source-only stable-rebase candidate; affected Linux validation is complete.
+- **Tester status:** tester-ready stable source; the complete Cargo workspace has been run and classified, and affected Bazel, package-script, and Linux-side Windows validation is complete.
 - **Publication target branch:** `codex/continuum-context-reclamation`.
 - **Upstream tracking branch:** `main`, kept separate from the Continuum changes.
 - **Tested upstream release:** `rust-v0.145.0` at `25af12f7e61572b0bc18ddb1008be543b91519b0`.
 - **Tested implementation commit:** `04a5211e32df427f9199b18c331ca945ae9692be`.
-- **Prebuilt releases:** none currently published.
+- **Tested source-validation repair commit:** `aa4d0e53b38392542ca9928024bebe86fd823e6b`.
+- **Prebuilt releases:** none currently published; the source-qualified tester artifact has not yet been built.
 - **Runtime configuration:** no Continuum-specific flag is required; the context policy is automatic in this build.
-- **Platform scope:** Linux validation is complete; native Windows and Bazel publication gates remain open.
+- **Platform scope:** Linux, Wine-backed Windows remote execution, and Windows gnullvm state compilation are validated. Native Windows and the Windows V8/RBE build boundary remain open.
 
 This rebase is local until its publication steps are deliberately completed. Documentation-only commits may appear after the tested implementation commit. The stable test ledger and artifact hashes are in [CONTINUUM_VALIDATION.md](CONTINUUM_VALIDATION.md); the prior alpha.24 evidence remains in [CONTINUUM_VALIDATION_ALPHA24.md](CONTINUUM_VALIDATION_ALPHA24.md).
 
@@ -70,11 +71,17 @@ The stable ledger separates rebase evidence from earlier model-behavior evidence
 - Focused core filters passed 12 reclamation, 4 completed-turn, 120 compact, 18 TokenBudget, 12 pending-input, 13 model-switching, 4 audio, and 7 hook cases.
 - The deterministic complete `codex-core` run passed 3,019 tests, with two failures and 12 skips. Both failures reproduced identically on untouched stable `0.145.0` and are classified as zsh approval/timeout behavior rather than Continuum regressions.
 - `codex-app-server` passed 965/965 tests with one platform skip.
+- The complete serial Cargo workspace run executed 12,665 tests: 12,657 passed, 8 failed, and 27 were skipped. Five failures were caused by stale empty sandbox mount targets under `/tmp` and passed in sanitized reruns; one stable-version snapshot was repaired and passed; the remaining two zsh cases reproduced identically on untouched upstream stable. No Continuum-specific assertion remained failing.
+- Stable-release validation metadata was repaired rather than hidden: 130 first-party `Cargo.lock` versions now match `0.145.0`, the MCP initialize test derives the real build version, and 23 release-version TUI snapshots record `0.145.0`.
+- `cargo-shear 1.11.2` reported no dependency-usage issue, and the complete workspace benchmark smoke gate passed.
+- Real Bazel argument-comment lint passed 720 targets, Bazel Clippy passed 719 targets, and the affected state/core/app-server Bazel tests finished with zero final failures. The release lock normalization prevents the old zero-target false green.
+- The hermetic Wine Windows exec-server smoke passed. Windows gnullvm state and state tests compiled; the core/app-server/CLI graph reached 14,778 of 14,838 actions before the local Linux host needed to execute target-built V8 `mksnapshot.exe`, a gate requiring Windows RBE or native Windows rather than a source change.
+- Package-builder, installer, and GitHub release-script tests passed 52/52, and Gitleaks `8.30.1` found no secret or private rollout material in the stable candidate range.
 - Stable's COW history, compact-session hooks, invalid-image fail-fast behavior, audio accounting, remote-compaction optimization, and absolute-path SQLite tests remain intact.
 - A Linux-only interrupt test exposed and verified a late-output race fix at the completed-turn boundary; the final version passed its unit coverage, five repeated boundary runs, and the WebSocket tool-chain regression.
-- The debug candidate reports `codex-cli 0.145.0`, passed CLI help/version and isolated empty-home app-server initialization, and has SHA-256 `69799be78b260c86c34d83b1b2b24fc6add56c0a1291d90f0d4dbc558a3e3019`.
+- The implementation-stage debug candidate reported `codex-cli 0.145.0`, passed CLI help/version and isolated empty-home app-server initialization, and had SHA-256 `69799be78b260c86c34d83b1b2b24fc6add56c0a1291d90f0d4dbc558a3e3019`. Its output path has since been reused, so this is historical evidence rather than the tester-readiness artifact.
 
-The complete Cargo workspace, Bazel parity, release-mode build, secret scan, and native-Windows gates have not been claimed. See [CONTINUUM_VALIDATION.md](CONTINUUM_VALIDATION.md) for exact topology, conflict decisions, commands, counts, control results, limitations, source identifiers, and hashes.
+The remaining publication boundaries are a source-qualified portable release artifact, authenticated Windows RBE or native-Windows build/runtime coverage, and deliberate remote publication. See [CONTINUUM_VALIDATION.md](CONTINUUM_VALIDATION.md) for exact topology, conflict decisions, commands, counts, control results, limitations, source identifiers, and hashes.
 
 Earlier alpha.13 production observation and exact-prefix causal experiments remain useful design evidence: retained discovery reasoning stayed effective after bulky source output was retired, while a deliberately reasoning-ablated arm failed. Those results are historical and have not been relabeled as stable-binary evidence. Their full methodology and limitations remain in [CONTINUUM_VALIDATION_ALPHA24.md](CONTINUUM_VALIDATION_ALPHA24.md).
 
@@ -112,15 +119,16 @@ cargo build -p codex-cli --bin codex
 & (Join-Path $env:CARGO_TARGET_DIR "debug\codex.exe")
 ```
 
-This source snapshot reports the upstream workspace version `codex-cli 0.145.0`. The official release commit updates `Cargo.toml` but retains `0.0.0` for local workspace packages in its committed `Cargo.lock`, so the first source build normalizes those local package-version entries. Dependency versions and checksums remain unchanged. In a clean clone, inspect `git diff -- codex-rs/Cargo.lock` after building; if it contains only those local version normalizations, `git restore codex-rs/Cargo.lock` returns the checkout to its published bytes.
+This source snapshot reports the upstream-compatible workspace version `codex-cli 0.145.0`. The official release commit updated `Cargo.toml` but retained `0.0.0` for 130 first-party packages in its committed `Cargo.lock`. Continuum commits the deterministic `0.145.0` normalization so Cargo and Bazel validation do not dirty a clean checkout or silently skip Bazel target discovery. Dependency versions, sources, checksums, and dependency lists are unchanged.
 
-To confirm that the tested implementation is in the checked-out history:
+To confirm that both the tested implementation and stable source-validation repair are in the checked-out history:
 
 ```bash
 git merge-base --is-ancestor 04a5211e32df427f9199b18c331ca945ae9692be HEAD
+git merge-base --is-ancestor aa4d0e53b38392542ca9928024bebe86fd823e6b HEAD
 ```
 
-An exit status of zero confirms that the implementation commit is an ancestor of the current documentation head.
+An exit status of zero for both commands confirms that the implementation and tester-readiness source repairs are ancestors of the current documentation head.
 
 ## Updating an existing clone
 
