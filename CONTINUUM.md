@@ -8,15 +8,23 @@ At the next user turn, Continuum keeps the durable conversational thread but cle
 
 ## Project status
 
-- **Tester status:** tester-ready stable source; the complete Cargo workspace has been run and classified, and affected Bazel, package-script, and Linux-side Windows validation is complete.
+- **Tester status:** tester-ready stable source and a source-qualified local Linux tester
+  artifact; the complete Cargo workspace has been run and classified, and affected Bazel,
+  package-script, runtime-smoke, and Linux-side Windows validation is complete.
 - **Publication target branch:** `codex/continuum-context-reclamation`.
 - **Upstream tracking branch:** `main`, kept separate from the Continuum changes.
 - **Tested upstream release:** `rust-v0.145.0` at `25af12f7e61572b0bc18ddb1008be543b91519b0`.
 - **Tested implementation commit:** `04a5211e32df427f9199b18c331ca945ae9692be`.
 - **Tested source-validation repair commit:** `aa4d0e53b38392542ca9928024bebe86fd823e6b`.
-- **Prebuilt releases:** none currently published; the source-qualified tester artifact has not yet been built.
+- **Tester artifact source commit:** `3d9b59c48ad11caccc103dbc96ee7bf3f9800a5a`.
+- **Prebuilt releases:** none currently published. An unsigned local
+  `0.145.0+continuum.2` tester bundle is staged under
+  `dist/continuum/0.145.0+continuum.2/`; it was not installed or uploaded.
 - **Runtime configuration:** no Continuum-specific flag is required; the context policy is automatic in this build.
-- **Platform scope:** Linux, Wine-backed Windows remote execution, and Windows gnullvm state compilation are validated. Native Windows and the Windows V8/RBE build boundary remain open.
+- **Platform scope:** Linux, Wine-backed Windows remote execution, and Windows gnullvm state
+  compilation are validated. Native Windows and the Windows V8/RBE build boundary remain open.
+  The Linux Codex binaries, bwrap, and rg are static PIE; the upstream bundled zsh asset requires
+  glibc and `libtinfo.so.6` despite its upstream musl asset name.
 
 This rebase is local until its publication steps are deliberately completed. Documentation-only commits may appear after the tested implementation commit. The stable test ledger and artifact hashes are in [CONTINUUM_VALIDATION.md](CONTINUUM_VALIDATION.md); the prior alpha.24 evidence remains in [CONTINUUM_VALIDATION_ALPHA24.md](CONTINUUM_VALIDATION_ALPHA24.md).
 
@@ -76,12 +84,23 @@ The stable ledger separates rebase evidence from earlier model-behavior evidence
 - `cargo-shear 1.11.2` reported no dependency-usage issue, and the complete workspace benchmark smoke gate passed.
 - Real Bazel argument-comment lint passed 720 targets, Bazel Clippy passed 719 targets, and the affected state/core/app-server Bazel tests finished with zero final failures. The release lock normalization prevents the old zero-target false green.
 - The hermetic Wine Windows exec-server smoke passed. Windows gnullvm state and state tests compiled; the core/app-server/CLI graph reached 14,778 of 14,838 actions before the local Linux host needed to execute target-built V8 `mksnapshot.exe`, a gate requiring Windows RBE or native Windows rather than a source change.
-- Package-builder, installer, and GitHub release-script tests passed 52/52, and Gitleaks `8.30.1` found no secret or private rollout material in the stable candidate range.
+- Package-builder, installer, and GitHub release-script tests passed 58/58 after adding
+  deterministic archive coverage, and Gitleaks `8.30.1` found no secret or private rollout
+  material in the stable candidate range.
 - Stable's COW history, compact-session hooks, invalid-image fail-fast behavior, audio accounting, remote-compaction optimization, and absolute-path SQLite tests remain intact.
 - A Linux-only interrupt test exposed and verified a late-output race fix at the completed-turn boundary; the final version passed its unit coverage, five repeated boundary runs, and the WebSocket tool-chain regression.
-- The implementation-stage debug candidate reported `codex-cli 0.145.0`, passed CLI help/version and isolated empty-home app-server initialization, and had SHA-256 `69799be78b260c86c34d83b1b2b24fc6add56c0a1291d90f0d4dbc558a3e3019`. Its output path has since been reused, so this is historical evidence rather than the tester-readiness artifact.
+- The source-qualified `x86_64-unknown-linux-musl` tester package reports
+  `codex-cli 0.145.0`. Its `.tar.zst` SHA-256 is
+  `48f4be494ed3dd9b38f0e4593f54250f8ae26f2a3d89dec0b568e9f7b160ee53`; its
+  `.tar.gz` SHA-256 is
+  `dc9c041abeb15801c90fae494be16de842ddf2e2881823eefc819e2ac380862f`.
+  Both decompress to the same canonical tar stream, and a second independent serialization
+  reproduced both archive hashes exactly.
 
-The remaining publication boundaries are a source-qualified portable release artifact, authenticated Windows RBE or native-Windows build/runtime coverage, and deliberate remote publication. See [CONTINUUM_VALIDATION.md](CONTINUUM_VALIDATION.md) for exact topology, conflict decisions, commands, counts, control results, limitations, source identifiers, and hashes.
+The remaining publication boundaries are authenticated Windows RBE or native-Windows
+build/runtime coverage, production signing, and deliberate remote publication. See
+[CONTINUUM_VALIDATION.md](CONTINUUM_VALIDATION.md) for exact topology, conflict decisions,
+commands, counts, control results, limitations, source identifiers, and hashes.
 
 Earlier alpha.13 production observation and exact-prefix causal experiments remain useful design evidence: retained discovery reasoning stayed effective after bulky source output was retired, while a deliberately reasoning-ablated arm failed. Those results are historical and have not been relabeled as stable-binary evidence. Their full methodology and limitations remain in [CONTINUUM_VALIDATION_ALPHA24.md](CONTINUUM_VALIDATION_ALPHA24.md).
 
@@ -121,14 +140,45 @@ cargo build -p codex-cli --bin codex
 
 This source snapshot reports the upstream-compatible workspace version `codex-cli 0.145.0`. The official release commit updated `Cargo.toml` but retained `0.0.0` for 130 first-party packages in its committed `Cargo.lock`. Continuum commits the deterministic `0.145.0` normalization so Cargo and Bazel validation do not dirty a clean checkout or silently skip Bazel target discovery. Dependency versions, sources, checksums, and dependency lists are unchanged.
 
-To confirm that both the tested implementation and stable source-validation repair are in the checked-out history:
+To confirm that the tested implementation, stable source-validation repair, and tester-artifact
+source are in the checked-out history:
 
 ```bash
 git merge-base --is-ancestor 04a5211e32df427f9199b18c331ca945ae9692be HEAD
 git merge-base --is-ancestor aa4d0e53b38392542ca9928024bebe86fd823e6b HEAD
+git merge-base --is-ancestor 3d9b59c48ad11caccc103dbc96ee7bf3f9800a5a HEAD
 ```
 
-An exit status of zero for both commands confirms that the implementation and tester-readiness source repairs are ancestors of the current documentation head.
+An exit status of zero for all three commands confirms that the implementation, stable-release
+validation repair, and deterministic archive source used for the tester artifact are ancestors of
+the current documentation head.
+
+## Testing the local release artifact
+
+The local tester archives are intentionally not installed over another Codex build. Extract one to
+a temporary directory and launch it by explicit path:
+
+```bash
+mkdir -p /tmp/codex-continuum-test
+tar --zstd -xf \
+  dist/continuum/0.145.0+continuum.2/codex-continuum-0.145.0+continuum.2-g3d9b59c48ad1-x86_64-unknown-linux-musl.tar.zst \
+  -C /tmp/codex-continuum-test
+
+/tmp/codex-continuum-test/bin/codex --version
+CODEX_HOME=/tmp/codex-continuum-home \
+  /tmp/codex-continuum-test/bin/codex
+```
+
+Expected version output:
+
+```text
+codex-cli 0.145.0
+```
+
+Verify `SHA256SUMS` in the distribution directory before extraction. The local bundle is unsigned
+and intended for testing, not production redistribution. It requires Linux x86-64; Codex itself,
+the code-mode host, bwrap, and rg are static PIE, while the upstream patched zsh resource requires
+the glibc loader plus `libtinfo.so.6`, `libm.so.6`, and `libc.so.6`.
 
 ## Updating an existing clone
 

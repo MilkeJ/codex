@@ -16,17 +16,18 @@ alpha.24 record in [CONTINUUM_VALIDATION_ALPHA24.md](CONTINUUM_VALIDATION_ALPHA2
 - **Cumulative binary-patch SHA-256:** `5ea1f1c02bc3966233775db473133f74e4ac912892592b5a753486db9cba0b52`
 - **Validation host:** Debian GNU/Linux forky/sid, x86-64
 - **Rust toolchain:** `1.95.0`
-- **Tester-readiness source commit:** `aa4d0e53b38392542ca9928024bebe86fd823e6b`
-- **Tester-readiness source tree:** `10f2d76befb5875a8642f30be0a495221eeb940d`
-- **Tester-readiness commits over stable:** 11
-- **Tester-readiness changed paths:** 63
-- **Tester-readiness cumulative diff:** 4,391 insertions and 581 deletions
-- **Tester-readiness binary-patch SHA-256:** `c4632955ecd17126b7467ba4e72b529439bca256d1729ba2f4fe095e5cae56f2`
+- **Stable-release validation repair:** `aa4d0e53b38392542ca9928024bebe86fd823e6b`
+- **Tester artifact source commit:** `3d9b59c48ad11caccc103dbc96ee7bf3f9800a5a`
+- **Tester artifact source tree:** `107f7bbcdd13ff82a836d098cd522127dc606947`
+- **Tester artifact source commits over stable:** 13
+- **Tester artifact source changed paths:** 65
+- **Tester artifact source cumulative diff:** 4,818 insertions and 585 deletions
+- **Tester artifact source binary-patch SHA-256:** `f9970b423b62d8968662a9b7c4f3c6290cea917e8ca97698f4339e7e4b9c2be2`
 - **Normalized Cargo lock SHA-256:** `ffa26a770e6bce911f93f2e170d8a76bf27abb4c4696bb81a9a65940de1f217e`
 - **Bazel module lock SHA-256:** `58e9f431d525cec77e3505c686e53a3bd81f2692cb492916a42bc878975e1128`
 
-Documentation-only commits may follow the tested source commit. Verify that both the implementation
-and source-validation repair are present with:
+Documentation-only commits may follow the tested source commit. Verify that the implementation,
+source-validation repair, and tester-artifact source are present with:
 
 ```bash
 git merge-base --is-ancestor \
@@ -34,6 +35,9 @@ git merge-base --is-ancestor \
   HEAD
 git merge-base --is-ancestor \
   aa4d0e53b38392542ca9928024bebe86fd823e6b \
+  HEAD
+git merge-base --is-ancestor \
+  3d9b59c48ad11caccc103dbc96ee7bf3f9800a5a \
   HEAD
 ```
 
@@ -311,6 +315,26 @@ anonymous-literal annotation:
 
 That annotation is source-only and does not change runtime behavior.
 
+### Release archive metadata normalized
+
+Tester-artifact review found that Python's default tar writer preserved builder uid/gid and
+user/group names. Gzip headers and member timestamps also followed the build clock, while package
+modes could follow the caller's umask. Continuum commit
+`3d9b59c48ad11caccc103dbc96ee7bf3f9800a5a` makes package archives canonical:
+
+- tar uid and gid are `0`, user and group names are blank, and transient atime/ctime PAX fields are
+  removed;
+- directories are `0755`, executable files are `0755`, and ordinary files are `0644`;
+- tar members and gzip headers use strict `SOURCE_DATE_EPOCH`, defaulting deterministically to
+  epoch `0` when the variable is absent;
+- ZIP timestamps and POSIX type/mode metadata are normalized as well;
+- malformed, non-ASCII, negative, or gzip-overflow epoch values fail before publication.
+
+The focused archive/package suite now passes 17/17. A real 347 MiB package was independently
+serialized through both gzip and zstd: both formats had normalized headers and the same
+decompressed tar SHA-256. The final tester package was then serialized a second time from the
+staged directory, reproducing both canonical archive hashes byte for byte.
+
 ### Complete Cargo workspace
 
 The first high-concurrency diagnostic pass deliberately used `--no-fail-fast` and completed:
@@ -369,7 +393,7 @@ remained failing.
 ```text
 cargo shear --deny-warnings: no issues found
 complete workspace benchmark smoke: passed
-package-builder Python tests: 11/11 passed
+package-builder Python tests: 17/17 passed
 installer Python tests: 6/6 passed
 GitHub release-script Python tests: 35/35 passed
 ```
@@ -443,15 +467,110 @@ the source or treating the Linux shell error as a compile failure would be incor
 
 ### Privacy and source hygiene
 
-Gitleaks `8.30.1`, installed from its checksum-verified official release asset, found no leak in the
-stable-to-Continuum commit range and no finding in any candidate-changed working-tree path. A manual
-review found no private home path, credential value, private prompt, raw proprietary tool output,
-rollout record, private reasoning, response/thread identifier, or private email address. Build
-outputs remain ignored and untracked.
+Gitleaks `8.30.1`, installed from its checksum-verified official release asset, scanned all 13
+commits from stable through the artifact source and found no leak. It also found no issue in the
+final documentation changes. A manual review found no private home path, credential value, private
+prompt, raw proprietary tool output, rollout record, private reasoning, response/thread
+identifier, or private email address. Build outputs remain ignored and untracked.
 
-All tracked migration SQL files remain canonical LF under `*.sql text eol=lf`. `git diff --check`,
-the final repository formatter, the non-mutating format gate, and the Node/pnpm Prettier gate are
-part of the final source-recording stage.
+All 42 tracked migration SQL files remain canonical LF under `*.sql text eol=lf`. `git diff
+--check`, the final repository formatter, the non-mutating format gate, and the Node/pnpm Prettier
+gate are part of the final source-recording stage.
+
+### Source-qualified Linux tester artifact
+
+An unsigned local tester package was built from the immutable source commit and tree recorded at
+the top of this ledger:
+
+```text
+external tester version: 0.145.0+continuum.2
+embedded workspace version: 0.145.0
+target: x86_64-unknown-linux-musl
+source commit: 3d9b59c48ad11caccc103dbc96ee7bf3f9800a5a
+source tree: 107f7bbcdd13ff82a836d098cd522127dc606947
+source date epoch: 1784917419
+build start: 2026-07-24T18:34:34Z
+archive completion: 2026-07-24T18:47:40Z
+final smoke completion: 2026-07-24T18:59:22Z
+```
+
+The build used Rust `1.95.0`, Zig `0.14.0`, a relocated musl `1.2.6` toolchain, target-only static
+libcap, and the checksum-verified `rusty_v8 149.2.0` musl archive/binding pair. The final build ran
+under `env -i` in a bubblewrap filesystem namespace with fixed canonical build/toolchain paths.
+Inherited encoded Rust flags, compiler wrappers, native include/library flags, and stale bwrap/V8
+overrides were absent. Source was mounted read-only.
+
+The helper release ordering matched upstream's security requirement:
+
+1. build and strip bwrap;
+2. hash its final bytes;
+3. export that SHA-256 while compiling Codex;
+4. package the unchanged helper;
+5. prove positive execution through packaged-resource discovery;
+6. append a byte and prove the embedded digest rejects it.
+
+The final helper digest was
+`42259008167894747ccbac27f9cfca0ba25b23cf3be931732188734c69d33d5f`.
+The tampered-helper smoke exited `101` with the expected digest-mismatch diagnostic.
+
+Canonical payload bytes:
+
+| Payload                       |       Bytes | SHA-256                                                            |
+| ----------------------------- | ----------: | ------------------------------------------------------------------ |
+| `bin/codex`                   | 310,652,912 | `c9d7a825b457efd203081e89273141bd6a461ab83a82080c1b9ce44cb9230d71` |
+| `bin/codex-code-mode-host`    |  46,139,224 | `35ce3b883e66423cc20b5ec840630608d1bc5a15387e871d61f2abdbce110ca2` |
+| `codex-resources/bwrap`       |     529,696 | `42259008167894747ccbac27f9cfca0ba25b23cf3be931732188734c69d33d5f` |
+| `codex-path/rg`               |   5,408,904 | `e62198eb19b136b88c330af83647b5a962cb99b6b1f066758568f12de1974849` |
+| `codex-resources/zsh/bin/zsh` |     898,480 | `67faaaa89242c4a332e16e508a1977cffc24bf7fca31d4411cdfd101f3831ef3` |
+
+Local archive records:
+
+| Artifact                                                                                           |       Bytes | SHA-256                                                            |
+| -------------------------------------------------------------------------------------------------- | ----------: | ------------------------------------------------------------------ |
+| `codex-continuum-0.145.0+continuum.2-g3d9b59c48ad1-x86_64-unknown-linux-musl.tar.gz`               | 132,341,718 | `dc9c041abeb15801c90fae494be16de842ddf2e2881823eefc819e2ac380862f` |
+| `codex-continuum-0.145.0+continuum.2-g3d9b59c48ad1-x86_64-unknown-linux-musl.tar.zst`              |  96,709,629 | `48f4be494ed3dd9b38f0e4593f54250f8ae26f2a3d89dec0b568e9f7b160ee53` |
+| `codex-symbols-codex-continuum-0.145.0+continuum.2-g3d9b59c48ad1-x86_64-unknown-linux-musl.tar.gz` | 218,991,362 | `471d98bad91d69f180619b0f4c9289a2a71862767cb4d391bc4282d665bf8896` |
+
+The gzip and zstd packages decompress to the same canonical tar stream, SHA-256
+`7effcaf8f7379652cd1dfa3e9031d8eab1037bd4854d73b31969485b79d02b86`. A second
+serialization from the same staged package reproduced both compressed archive hashes exactly.
+Archive inspection required eleven declared members, no absolute or parent-traversal path, only
+directories and ordinary files, empty link targets, uid/gid `0`, blank owner/group names, commit
+timestamps, and canonical modes. The package and full raw-symbol payloads passed both fixed and
+dynamically derived private-path/user scans before archive acceptance.
+
+The first canonical build completed compilation and archive creation but intentionally emitted no
+result marker because its final script self-hash used relative `$0` after changing directories. The
+executed build script remained byte-identical at SHA-256
+`f7d820cd40b0a00bc9b55d0cbf59fb0119f4c196ab1c74d5e3520b0992c50527`. A separate
+finalizer, SHA-256
+`8749d7e4ba8e59f51a0c76d02958212b4a0d0d7058a6764517d8785e16a3fb7f`, rechecked
+source/tree/cleanliness, lockfiles, V8 inputs, zsh manifest, build-script bytes, target-to-package
+binary equality, bwrap equality, privacy, archive content, and archive metadata before atomically
+writing the build result. This recovery mode is retained in provenance rather than presented as an
+uninterrupted harness pass.
+
+The final smoke script, SHA-256
+`ac8c492622b85367834f3557bbb5c8ad37c3ec6732eb1f5425f045b567f3860f`, passed:
+
+- gzip and zstd integrity, headers, member types, modes, extracted-byte equality, and metadata;
+- valid stripped ELF64 x86-64 payloads;
+- static PIE linking for Codex, code-mode host, bwrap, and rg;
+- `codex-cli 0.145.0`, CLI help, rg `15.2.0`, patched zsh `5.9.0.3-test`, and bwrap version;
+- clean code-mode-host EOF shutdown;
+- prompt-input construction and app-server initialize/shutdown with independent homes and
+  bubblewrap `--unshare-net`;
+- packaged bwrap positive execution and compiled-digest tamper rejection.
+
+The official `codex-zsh-v0.1.0` x86-64 Linux asset is named musl upstream, but its actual ELF uses
+`/lib64/ld-linux-x86-64.so.2` and needs exactly `libtinfo.so.6`, `libm.so.6`, and `libc.so.6`.
+Those libraries resolved and zsh executed on the validation host. The tester package is therefore
+not claimed to be usable on a strictly musl-only distribution without a glibc compatibility layer.
+This upstream-resource limitation is recorded rather than hidden by weakening the ELF check.
+
+The artifact was always invoked by explicit isolated path with temporary application homes. It did
+not replace the currently installed Continuum package, change a selector, access the real
+application home, sign bytes, upload a release, or push a Git ref.
 
 ## Remaining boundaries
 
@@ -462,6 +581,8 @@ The following remain explicit boundaries rather than hidden passes:
 - native PowerShell, ACL, sandbox, ConPTY, symlink-privilege, and managed-firewall behavior;
 - reopening the exact historical Windows application home, which was lost;
 - a new live production run or model-behavior experiment on stable `0.145.0`;
+- production signing and publication of the local unsigned Linux tester archive;
+- a truly musl-only patched-zsh resource, or explicit glibc compatibility for the upstream asset;
 - deliberate remote branch/tag publication.
 
 Linux fully exercises the synthetic LF/CRLF SQLx checksum condition and the platform-neutral context
@@ -487,6 +608,8 @@ are integrated rather than overwritten.
 
 Affected Linux compilation, the complete Cargo workspace, package scripts, benchmark smoke,
 dependency usage, Bazel lint/Clippy, affected native Bazel targets, and Linux-side Windows
-execution found no unclassified Continuum regression. Public replacement of the rolling tester
-branch should still wait for the source-qualified tester artifact, desired native-Windows/RBE
-evidence, and an immutable remote tag for the pre-rebase public head.
+execution found no unclassified Continuum regression. The source-qualified local tester artifact
+also passed deterministic packaging, privacy/provenance, network-denied protocol, resource-digest,
+and runtime smoke gates. Public replacement of the rolling tester branch should still wait for
+desired native-Windows/RBE evidence, production signing, an immutable remote tag for the pre-rebase
+public head, and deliberate user approval to push.
