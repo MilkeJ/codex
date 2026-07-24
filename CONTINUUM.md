@@ -8,15 +8,16 @@ At the next user turn, Continuum keeps the durable conversational thread but cle
 
 ## Project status
 
-- **Tester status:** source-only experimental snapshot.
-- **Default branch:** `codex/continuum-context-reclamation`.
+- **Tester status:** source-only stable-rebase candidate; affected Linux validation is complete.
+- **Publication target branch:** `codex/continuum-context-reclamation`.
 - **Upstream tracking branch:** `main`, kept separate from the Continuum changes.
-- **Tested upstream release:** `rust-v0.145.0-alpha.24` at `d4829e44472cba573a71eeb415f8c11ba3580129`.
-- **Tested implementation commit:** `03c2c35444ab590fceefbdbff202e98150ad5233`.
+- **Tested upstream release:** `rust-v0.145.0` at `25af12f7e61572b0bc18ddb1008be543b91519b0`.
+- **Tested implementation commit:** `04a5211e32df427f9199b18c331ca945ae9692be`.
 - **Prebuilt releases:** none currently published.
 - **Runtime configuration:** no Continuum-specific flag is required; the context policy is automatic in this build.
+- **Platform scope:** Linux validation is complete; native Windows and Bazel publication gates remain open.
 
-Documentation-only commits may appear after the tested implementation commit. The complete test ledger and artifact hashes are in [CONTINUUM_VALIDATION.md](CONTINUUM_VALIDATION.md).
+This rebase is local until its publication steps are deliberately completed. Documentation-only commits may appear after the tested implementation commit. The stable test ledger and artifact hashes are in [CONTINUUM_VALIDATION.md](CONTINUUM_VALIDATION.md); the prior alpha.24 evidence remains in [CONTINUUM_VALIDATION_ALPHA24.md](CONTINUUM_VALIDATION_ALPHA24.md).
 
 ## What Continuum changes
 
@@ -50,9 +51,9 @@ The design assumes those durable messages normally carry the task-level continui
 
 ### Cross-platform migration compatibility
 
-The `alpha.24` catch-up also adds a narrow SQLite migration compatibility layer. This is separate from the context policy, but it is necessary for reliable upgrades when an earlier Windows checkout embedded CRLF migration bytes and a newer canonical build embeds LF bytes.
+Continuum also carries a narrow SQLite migration compatibility layer. This is separate from the context policy, but it is necessary for reliable upgrades when an earlier Windows checkout embedded CRLF migration bytes and a newer canonical build embeds LF bytes.
 
-New migration files remain canonical LF. For an already-applied known migration, Continuum accepts the stored SQLx checksum only when it exactly matches the LF or CRLF byte form of the same embedded SQL. It adapts only the in-memory migrator, never rewrites migration history, and continues to reject genuine SQL changes. The compatibility path covers all five local state databases, including lazy thread history.
+New migration files remain canonical LF. For an already-applied known migration, Continuum accepts the stored SQLx checksum only when it exactly matches the LF or CRLF byte form of the same embedded SQL. The EOL compatibility path adapts only the in-memory migrator and never rewrites stored checksums; a separate legacy recency repair may update its historical version and description while preserving that exact checksum. Genuine SQL changes remain fatal. The compatibility path covers all five local state databases, including lazy thread history.
 
 ## Why this exists
 
@@ -62,21 +63,20 @@ Continuum instead tries a narrower reduction first: retire large, already-consum
 
 ## What testing showed
 
-The published validation record separates repository tests, production observations, exploratory screens, and confirmatory experiments. Key results include:
+The stable ledger separates rebase evidence from earlier model-behavior evidence. Key `0.145.0` results include:
 
-- The seven-commit implementation is based on the official `0.145.0-alpha.24` prerelease. The six context-management commits replayed without conflicts and retained identical stable patch IDs; the seventh commit is the migration compatibility repair described above.
-- Context and upstream-overlap validation passed 49/49 focused cases. Broader affected modules passed 12/12 pending-input, 13/13 model-switching, 22/22 TokenBudget, 48/48 remote-compaction/parity, and 41/41 local-compaction tests.
-- The migration layer passed all 163 `codex-state` tests and a 12-arm synthetic compatibility/rollback matrix across all five state databases. The verified `.3` runtime also opened the existing application home that the broken `.1` candidate could not.
-- The earlier `0.145.0-alpha.13+continuum.1` production build reclaimed tool output twice during one long turn while preserving active reasoning, then correctly fell back to compaction when another reclamation missed both 10% safeguards.
-- In a 12-block exact-prefix pilot, raw output plus reasoning and reclaimed output plus reasoning both answered 12/12 cases exactly, with 96/96 correct fields and no rereads.
-- The causal control used the same reclaimed request but additionally removed only the reasoning derived after consuming the fixture. That deliberately information-starved arm answered 0/12 cases exactly and 0/96 fields correctly, while the reclaimed-plus-reasoning arm remained perfect.
-- In that specific synthetic fixture, reclamation also reduced the median request by 5,370.5 input tokens and median total usage by 5,337.5 tokens versus the raw control. Those magnitudes are task-specific secondary measurements, not the central result.
+- Exactly eight Continuum commits were replayed onto stable with the obsolete sibling alpha release commit excluded. A ninth integration commit records stable-specific semantic adaptations.
+- `codex-state` passed 164/164 tests, including stable migrations `0041` and `0042`, exact LF/CRLF compatibility, genuine-change rejection, race refresh, all eager databases, lazy thread history, and legacy recency repair.
+- Focused core filters passed 12 reclamation, 4 completed-turn, 120 compact, 18 TokenBudget, 12 pending-input, 13 model-switching, 4 audio, and 7 hook cases.
+- The deterministic complete `codex-core` run passed 3,019 tests, with two failures and 12 skips. Both failures reproduced identically on untouched stable `0.145.0` and are classified as zsh approval/timeout behavior rather than Continuum regressions.
+- `codex-app-server` passed 965/965 tests with one platform skip.
+- Stable's COW history, compact-session hooks, invalid-image fail-fast behavior, audio accounting, remote-compaction optimization, and absolute-path SQLite tests remain intact.
+- A Linux-only interrupt test exposed and verified a late-output race fix at the completed-turn boundary; the final version passed its unit coverage, five repeated boundary runs, and the WebSocket tool-chain regression.
+- The debug candidate reports `codex-cli 0.145.0`, passed CLI help/version and isolated empty-home app-server initialization, and has SHA-256 `69799be78b260c86c34d83b1b2b24fc6add56c0a1291d90f0d4dbc558a3e3019`.
 
-The primary result is that retained discovery reasoning remained an effective information channel after the bulky source output was retired. The negative arm was a causal ablation, not a proposed production policy or a context-equivalent performance baseline. These results demonstrate semantic feasibility in the controlled task; they do not prove equivalence across arbitrary coding work or guarantee that reasoning preserves every exact detail from a retired output. The controlled behavioral pilot and production observation were performed on the earlier `0.145.0-alpha.13+continuum.1` snapshot; the `alpha.24` catch-up was validated through repository tests, semantic review, migration compatibility tests, an immutable candidate build, and successful existing-home startup rather than by rerunning those model experiments.
+The complete Cargo workspace, Bazel parity, release-mode build, secret scan, and native-Windows gates have not been claimed. See [CONTINUUM_VALIDATION.md](CONTINUUM_VALIDATION.md) for exact topology, conflict decisions, commands, counts, control results, limitations, source identifiers, and hashes.
 
-The primary causal experiment used direct dynamic function output. Normal file-oriented work under the tested model configuration commonly uses an outer execution tool and custom-tool output, which can also involve code-session state and output formatting. Production reclamation handles both output variants, but a separate outer-execution replication would be needed before making an equally strong empirical claim about every file-tool path.
-
-See [CONTINUUM_VALIDATION.md](CONTINUUM_VALIDATION.md) for the full evidence, limitations, test counts, source identifiers, and hashes.
+Earlier alpha.13 production observation and exact-prefix causal experiments remain useful design evidence: retained discovery reasoning stayed effective after bulky source output was retired, while a deliberately reasoning-ablated arm failed. Those results are historical and have not been relabeled as stable-binary evidence. Their full methodology and limitations remain in [CONTINUUM_VALIDATION_ALPHA24.md](CONTINUUM_VALIDATION_ALPHA24.md).
 
 ## Build and run from source
 
@@ -112,14 +112,12 @@ cargo build -p codex-cli --bin codex
 & (Join-Path $env:CARGO_TARGET_DIR "debug\codex.exe")
 ```
 
-This source snapshot reports the upstream workspace version `codex-cli 0.145.0-alpha.24`. The official release commit updates `Cargo.toml` but retains `0.0.0` for local workspace packages in its committed `Cargo.lock`, so the first source build normalizes those local package-version entries. Dependency versions and checksums remain unchanged. In a clean clone, inspect `git diff -- codex-rs/Cargo.lock` after building; if it contains only those local version normalizations, `git restore codex-rs/Cargo.lock` returns the checkout to its published bytes.
-
-The separately validated `0.145.0-alpha.24+continuum.3` label came from a build-only version overlay that is intentionally not committed here.
+This source snapshot reports the upstream workspace version `codex-cli 0.145.0`. The official release commit updates `Cargo.toml` but retains `0.0.0` for local workspace packages in its committed `Cargo.lock`, so the first source build normalizes those local package-version entries. Dependency versions and checksums remain unchanged. In a clean clone, inspect `git diff -- codex-rs/Cargo.lock` after building; if it contains only those local version normalizations, `git restore codex-rs/Cargo.lock` returns the checkout to its published bytes.
 
 To confirm that the tested implementation is in the checked-out history:
 
 ```bash
-git merge-base --is-ancestor 03c2c35444ab590fceefbdbff202e98150ad5233 HEAD
+git merge-base --is-ancestor 04a5211e32df427f9199b18c331ca945ae9692be HEAD
 ```
 
 An exit status of zero confirms that the implementation commit is an ancestor of the current documentation head.
@@ -128,7 +126,7 @@ An exit status of zero confirms that the implementation commit is an ancestor of
 
 The tester-facing Continuum branch is maintained as a small, rolling patch stack rebased onto each newly validated upstream release. Rebasing keeps the GitHub history linear and makes the Continuum changes easy to review, but it also replaces the branch's prior commit IDs.
 
-After a published rebase, the safest update is a fresh clone. The previously validated `alpha.20` public snapshot is retained by the immutable `continuum-snapshot-0.145.0-alpha.20-e60b9bc6` tag.
+After a published rebase, the safest update is a fresh clone. The previously validated `alpha.20` public snapshot is retained by the immutable `continuum-snapshot-0.145.0-alpha.20-e60b9bc6` tag. This local stable-rebase checkout also preserves the pre-rebase alpha.24 head `f29c91d29b9052055ffb1b46506de1ba0b39fe97` through a backup branch and safety tag; an immutable remote snapshot should be created before the rolling public branch is replaced.
 
 ```bash
 git clone REPOSITORY_URL codex-continuum
