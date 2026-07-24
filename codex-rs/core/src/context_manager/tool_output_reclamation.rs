@@ -24,7 +24,12 @@ impl ToolOutputReclamation {
         consumed_item_count: usize,
         base_instructions: &BaseInstructions,
     ) -> Option<Self> {
-        Self::plan_from(history, consumed_item_count, base_instructions, None)
+        Self::plan_from(
+            history,
+            consumed_item_count,
+            base_instructions,
+            /*existing*/ None,
+        )
     }
 
     pub(crate) fn extend(
