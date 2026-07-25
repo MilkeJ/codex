@@ -94,3 +94,27 @@ CHANGELOG.ignore.md
 # Python bytecode files
 __pycache__/
 *.pyc
+
+# Local Codex application state and private audit captures.
+# Project-owned files elsewhere under .codex/ remain trackable.
+/auth.json
+/history.jsonl
+/sessions/
+/archived_sessions/
+/*.db
+/*.db-*
+/*.sqlite*
+
+/.codex/auth.json
+/.codex/history.jsonl
+/.codex/sessions/
+/.codex/archived_sessions/
+/.codex/*.db*
+/.codex/*.sqlite*
+/.codex/log/
+/.codex/shell_snapshots/
+/.codex/tmp/
+
+/self-audit/
+/self_audit/
+/self audit/

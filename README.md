@@ -5,9 +5,12 @@
 > active reasoning derived from that output, so the turn can continue from its
 > discoveries before normal compaction becomes necessary.
 > The installer, package-manager, and release links in the upstream README below
-> install official Codex, not Continuum. To build and test this fork, start with
-> [the Continuum guide](CONTINUUM.md). No prebuilt Continuum release is currently
-> published.
+> install official Codex, not Continuum. Start with the
+> [Continuum project guide](CONTINUUM.md) and
+> [tester installation guide](CONTINUUM_INSTALL.md), then check the repository's
+> current release status rather than assuming a prebuilt asset exists. Any
+> published `.2` binary archive should be treated as an unsigned Linux x86-64
+> direct-run tester payload, not an installer or production release.
 
 <p align="center"><strong>Codex CLI</strong> is a coding agent from OpenAI that runs locally on your computer.
 <p align="center">

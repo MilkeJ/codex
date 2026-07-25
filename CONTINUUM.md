@@ -17,16 +17,18 @@ At the next user turn, Continuum keeps the durable conversational thread but cle
 - **Tested implementation commit:** `04a5211e32df427f9199b18c331ca945ae9692be`.
 - **Tested source-validation repair commit:** `aa4d0e53b38392542ca9928024bebe86fd823e6b`.
 - **Tester artifact source commit:** `3d9b59c48ad11caccc103dbc96ee7bf3f9800a5a`.
-- **Prebuilt releases:** none currently published. An unsigned local
-  `0.145.0+continuum.2` tester bundle is staged under
-  `dist/continuum/0.145.0+continuum.2/`; it was not installed or uploaded.
+- **Tester distribution:** `.2` was qualified as an unsigned Linux x86-64 direct-run
+  payload. An audited builder checkout may stage it under the ignored
+  `dist/continuum/0.145.0+continuum.2/` path, which is not included in a fresh clone. This
+  source snapshot does not claim that a GitHub Release exists. `.2` does not include `contm`, an
+  installer, a version selector, automatic rollback, or integrity/doctor commands.
 - **Runtime configuration:** no Continuum-specific flag is required; the context policy is automatic in this build.
 - **Platform scope:** Linux, Wine-backed Windows remote execution, and Windows gnullvm state
   compilation are validated. Native Windows and the Windows V8/RBE build boundary remain open.
   The Linux Codex binaries, bwrap, and rg are static PIE; the upstream bundled zsh asset requires
   glibc and `libtinfo.so.6` despite its upstream musl asset name.
 
-This rebase is local until its publication steps are deliberately completed. Documentation-only commits may appear after the tested implementation commit. The stable test ledger and artifact hashes are in [CONTINUUM_VALIDATION.md](CONTINUUM_VALIDATION.md); the prior alpha.24 evidence remains in [CONTINUUM_VALIDATION_ALPHA24.md](CONTINUUM_VALIDATION_ALPHA24.md).
+Publication of this rebase is a separate deliberate operation. Documentation-only commits may appear after the tested implementation commit. The stable test ledger and artifact hashes are in [CONTINUUM_VALIDATION.md](CONTINUUM_VALIDATION.md); the prior alpha.24 evidence remains in [CONTINUUM_VALIDATION_ALPHA24.md](CONTINUUM_VALIDATION_ALPHA24.md). Direct-run instructions and the separate generic operator pattern for versioned installation are in [CONTINUUM_INSTALL.md](CONTINUUM_INSTALL.md).
 
 ## What Continuum changes
 
@@ -153,21 +155,16 @@ An exit status of zero for all three commands confirms that the implementation, 
 validation repair, and deterministic archive source used for the tester artifact are ancestors of
 the current documentation head.
 
-## Testing the local release artifact
+## Testing the `.2` direct-run artifact
 
-The local tester archives are intentionally not installed over another Codex build. Extract one to
-a temporary directory and launch it by explicit path:
+An audited builder checkout may contain the ignored local `dist/continuum/0.145.0+continuum.2/`
+directory. It is build output, not tracked source, so it will not appear in a fresh clone. If a future
+GitHub tester prerelease provides `.2`, download the named asset first; this document does not claim
+that such a release currently exists.
 
-```bash
-mkdir -p /tmp/codex-continuum-test
-tar --zstd -xf \
-  dist/continuum/0.145.0+continuum.2/codex-continuum-0.145.0+continuum.2-g3d9b59c48ad1-x86_64-unknown-linux-musl.tar.zst \
-  -C /tmp/codex-continuum-test
-
-/tmp/codex-continuum-test/bin/codex --version
-CODEX_HOME=/tmp/codex-continuum-home \
-  /tmp/codex-continuum-test/bin/codex
-```
+Verify the archive digest, extract it into a temporary directory, and launch it by explicit path with
+an isolated `CODEX_HOME`. The exact commands and SHA-256 are in
+[CONTINUUM_INSTALL.md](CONTINUUM_INSTALL.md).
 
 Expected version output:
 
@@ -175,16 +172,29 @@ Expected version output:
 codex-cli 0.145.0
 ```
 
-Verify `SHA256SUMS` in the distribution directory before extraction. The local bundle is unsigned
-and intended for testing, not production redistribution. It requires Linux x86-64; Codex itself,
-the code-mode host, bwrap, and rg are static PIE, while the upstream patched zsh resource requires
-the glibc loader plus `libtinfo.so.6`, `libm.so.6`, and `libc.so.6`.
+The `.2` payload is unsigned and intended for direct testing, not production redistribution. It
+requires Linux x86-64; Codex itself, the code-mode host, bwrap, and rg are static PIE, while the
+upstream patched zsh resource requires the glibc loader plus `libtinfo.so.6`, `libm.so.6`, and
+`libc.so.6`.
+
+## Versioned installation and rollback
+
+The tested operator design uses a stable regular `contm` launcher, a regular atomically replaced
+selector, and retained write-once/content-qualified version directories. That manager is not shipped
+in `.2`. Switching the selector affects future launches only; running processes must be fully exited
+and relaunched.
+
+Executable rollback is distinct from rolling back `CODEX_HOME`, authentication state, sessions, raw
+rollouts, or SQLite databases. Use an isolated `CODEX_HOME` for candidate testing. Both Continuum
+`.1` and `.2` report the upstream-compatible `codex-cli 0.145.0`, so identify a build through its
+selected ID or explicit path, digest, and source metadata—not the version string alone. See
+[CONTINUUM_INSTALL.md](CONTINUUM_INSTALL.md) for the generic design and privacy boundaries.
 
 ## Updating an existing clone
 
 The tester-facing Continuum branch is maintained as a small, rolling patch stack rebased onto each newly validated upstream release. Rebasing keeps the GitHub history linear and makes the Continuum changes easy to review, but it also replaces the branch's prior commit IDs.
 
-After a published rebase, the safest update is a fresh clone. The previously validated `alpha.20` public snapshot is retained by the immutable `continuum-snapshot-0.145.0-alpha.20-e60b9bc6` tag. This local stable-rebase checkout also preserves the pre-rebase alpha.24 head `f29c91d29b9052055ffb1b46506de1ba0b39fe97` through a backup branch and safety tag; an immutable remote snapshot should be created before the rolling public branch is replaced.
+After a published rebase, the safest update is a fresh clone. The previously validated `alpha.20` public snapshot is retained by the immutable `continuum-snapshot-0.145.0-alpha.20-e60b9bc6` tag. The pre-rebase alpha.24 head `f29c91d29b9052055ffb1b46506de1ba0b39fe97` is retained by the immutable `continuum-snapshot-0.145.0-alpha.24-f29c91d2` tag, which must be published and verified before the rolling branch is replaced.
 
 ```bash
 git clone REPOSITORY_URL codex-continuum
